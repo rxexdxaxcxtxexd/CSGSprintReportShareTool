@@ -1,0 +1,67 @@
+# Session data (user-specific, not for repo)
+.claude-sessions/checkpoints/*.json
+.claude-sessions/logs/*.md
+
+# Keep the structure but not the content
+!.claude-sessions/checkpoints/.gitkeep
+!.claude-sessions/logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Logs
+*.log
+
+# Backups
+*.backup
+*.bak
+CLAUDE.md.backup
+
+# OS
+Thumbs.db
+.DS_Store
+
+# User-specific Claude config
+.claude.json
