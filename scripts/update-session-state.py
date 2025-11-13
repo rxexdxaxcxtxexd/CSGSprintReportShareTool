@@ -10,6 +10,7 @@ This script:
 """
 
 import json
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -52,9 +53,33 @@ class ClaudeMdUpdater:
             return f.read()
 
     def write_claude_md(self, content: str):
-        """Write updated content to CLAUDE.md"""
-        with open(self.claude_md_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        """Write updated content to CLAUDE.md atomically"""
+        import tempfile
+        import shutil
+
+        # Write to temporary file first
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=self.claude_md_path.parent,
+            prefix='.claude_md_tmp_',
+            suffix='.md',
+            text=True
+        )
+
+        try:
+            # Write content to temp file
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            # Atomic rename (on most systems, including Windows)
+            shutil.move(temp_path, self.claude_md_path)
+
+        except Exception as e:
+            # Clean up temp file on error
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            raise e
 
     def find_section(self, content: str, section_title: str) -> Tuple[Optional[int], Optional[int]]:
         """Find the start and end positions of a section"""

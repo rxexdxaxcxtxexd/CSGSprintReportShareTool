@@ -209,6 +209,28 @@ class SessionLogger:
         # Convert dataclasses to dict
         checkpoint_dict = asdict(checkpoint)
 
+        # Validate checkpoint before saving
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "checkpoint_schema",
+                os.path.join(os.path.dirname(__file__), "checkpoint_schema.py")
+            )
+            checkpoint_schema = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(checkpoint_schema)
+
+            is_valid, errors = checkpoint_schema.validate_checkpoint(checkpoint_dict)
+
+            if not is_valid:
+                print("Warning: Checkpoint validation failed:")
+                for error in errors[:5]:  # Show first 5 errors
+                    print(f"  - {error}")
+                print("  (Saving anyway, but checkpoint may be incomplete)")
+
+        except Exception as e:
+            print(f"Warning: Could not validate checkpoint: {e}")
+            # Continue anyway - validation is non-critical
+
         with open(checkpoint_file, 'w', encoding='utf-8') as f:
             json.dump(checkpoint_dict, f, indent=2, ensure_ascii=False)
 

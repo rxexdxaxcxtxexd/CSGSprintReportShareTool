@@ -37,6 +37,18 @@ SessionLogger = session_logger.SessionLogger
 class SessionSaver:
     """Intelligently collect and save session data"""
 
+    # File size and type limits
+    MAX_FILE_SIZE = 1_000_000  # 1MB
+    BINARY_EXTENSIONS = {
+        '.exe', '.dll', '.so', '.dylib', '.bin',
+        '.zip', '.tar', '.gz', '.rar', '.7z',
+        '.mp4', '.avi', '.mov', '.mp3', '.wav',
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico',
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.db', '.sqlite', '.sqlite3',
+        '.whl', '.egg'
+    }
+
     def __init__(self, base_dir: str = None):
         """Initialize the session saver"""
         if base_dir is None:
@@ -45,10 +57,12 @@ class SessionSaver:
         self.base_dir = Path(base_dir)
         self.session_start_time = None
         self.is_git_repo = self._check_git_repo()
+        self.skipped_files = {'large': 0, 'binary': 0}  # Track skipped files
+        self.history_path = Path.home() / '.claude' / 'history.jsonl'
 
         # Directories to exclude from scanning
         self.exclude_dirs = {
-            '.git', '.claude-sessions', '__pycache__', 'node_modules',
+            '.git', '.claude-sessions', '.claude', '__pycache__', 'node_modules',
             '.venv', 'venv', 'env', '.tox', '.pytest_cache',
             'dist', 'build', '.eggs', '*.egg-info',
             '.mypy_cache', '.coverage', 'htmlcov'
@@ -74,6 +88,63 @@ class SessionSaver:
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
+
+    def detect_session_boundary(self, gap_minutes: int = 60) -> Optional[datetime]:
+        """Detect session start by finding gaps in history.jsonl
+
+        Args:
+            gap_minutes: Minimum gap size to consider a session boundary (default: 60)
+
+        Returns:
+            Session start time, or None if can't detect
+        """
+        if not self.history_path.exists():
+            return None
+
+        try:
+            # Read history entries (last 200 to keep it fast)
+            entries = []
+            with open(self.history_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if 'timestamp' in entry:
+                            entries.append(entry)
+                    except json.JSONDecodeError:
+                        continue
+
+            if not entries:
+                return None
+
+            # Get recent entries (last 200)
+            recent_entries = entries[-200:]
+
+            # Find the most recent gap > gap_minutes
+            gap_threshold = timedelta(minutes=gap_minutes)
+            session_start = None
+
+            for i in range(len(recent_entries) - 1, 0, -1):
+                current_ts = datetime.fromtimestamp(recent_entries[i]['timestamp'] / 1000)
+                prev_ts = datetime.fromtimestamp(recent_entries[i-1]['timestamp'] / 1000)
+
+                gap = current_ts - prev_ts
+
+                if gap > gap_threshold:
+                    # Found a gap - session starts after this gap
+                    session_start = current_ts
+                    break
+
+            # If no gap found, use the earliest entry in recent history
+            if session_start is None and recent_entries:
+                session_start = datetime.fromtimestamp(recent_entries[0]['timestamp'] / 1000)
+
+            return session_start
+
+        except Exception as e:
+            print(f"Warning: Could not detect session boundary: {e}")
+            return None
 
     def _should_exclude_path(self, path: Path) -> bool:
         """Check if path should be excluded from scanning"""
@@ -146,9 +217,18 @@ class SessionSaver:
         return changes
 
     def collect_file_changes(self, since_minutes: int = 240, max_depth: int = 3) -> List[Dict]:
-        """Collect file changes based on modification time"""
+        """Collect file changes based on modification time
+
+        Uses session_start_time if available, otherwise falls back to since_minutes
+        """
         changes = []
-        cutoff_time = datetime.now() - timedelta(minutes=since_minutes)
+
+        # Use session_start_time if detected, otherwise use since_minutes
+        if self.session_start_time:
+            cutoff_time = self.session_start_time
+        else:
+            cutoff_time = datetime.now() - timedelta(minutes=since_minutes)
+
         max_files = 100  # Limit to prevent excessive scanning
 
         try:
@@ -176,8 +256,21 @@ class SessionSaver:
                         continue
 
                     try:
+                        # Check file stats
+                        file_stats = filepath.stat()
+
+                        # Skip binary files
+                        if filepath.suffix.lower() in self.BINARY_EXTENSIONS:
+                            self.skipped_files['binary'] += 1
+                            continue
+
+                        # Skip large files
+                        if file_stats.st_size > self.MAX_FILE_SIZE:
+                            self.skipped_files['large'] += 1
+                            continue
+
                         # Check modification time
-                        mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
+                        mtime = datetime.fromtimestamp(file_stats.st_mtime)
 
                         if mtime > cutoff_time:
                             # Determine if created or modified
@@ -273,24 +366,154 @@ class SessionSaver:
 
         return f"Modified {len(changes)} file(s)"
 
-    def suggest_resume_points(self, changes: List[Dict]) -> List[str]:
-        """Suggest resume points based on changes"""
+    def _analyze_python_file(self, filepath: Path) -> List[str]:
+        """Analyze Python file for incomplete work using AST
+
+        Returns list of specific resume points found in the file
+        """
         points = []
 
-        # Check for incomplete work indicators
-        for change in changes:
-            filepath = change['file_path']
+        try:
+            import ast
 
-            if 'test' in filepath.lower() and change['action'] == 'created':
-                points.append(f"Run and verify tests in {filepath}")
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
 
-            if 'TODO' in filepath or 'FIXME' in filepath:
-                points.append(f"Complete TODO items in {filepath}")
+            # Parse AST
+            try:
+                tree = ast.parse(content, filename=str(filepath))
+            except SyntaxError:
+                # If there's a syntax error, that's definitely incomplete work!
+                points.append(f"Fix syntax error in {filepath}")
+                return points
 
-        # Generic resume point
-        if changes:
-            most_recent = max(changes, key=lambda c: c.get('modified', ''))
+            # Find incomplete functions (only has pass or docstring)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    # Check if function body is just pass or docstring
+                    body = node.body
+                    if len(body) == 1:
+                        if isinstance(body[0], ast.Pass):
+                            points.append(f"Implement {node.name}() in {filepath}:{node.lineno}")
+                        elif isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Str):
+                            # Just a docstring, no implementation
+                            points.append(f"Implement {node.name}() in {filepath}:{node.lineno}")
+
+                    # Check for TODO/FIXME/HACK in function
+                    if len(body) > 0 and isinstance(body[0], ast.Expr):
+                        if isinstance(body[0].value, (ast.Str, ast.Constant)):
+                            docstring = ast.get_docstring(node) or ""
+                            if any(marker in docstring.upper() for marker in ['TODO', 'FIXME', 'HACK', 'XXX']):
+                                points.append(f"Address TODO in {node.name}() at {filepath}:{node.lineno}")
+
+        except Exception:
+            # Silently fail - not critical
+            pass
+
+        return points
+
+    def _find_todo_comments(self, filepath: Path) -> List[str]:
+        """Find TODO/FIXME/HACK comments in file
+
+        Returns list of resume points for TODO items
+        """
+        points = []
+        todo_pattern = re.compile(r'#\s*(TODO|FIXME|HACK|XXX|NOTE|OPTIMIZE):?\s*(.+)', re.IGNORECASE)
+
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                for line_num, line in enumerate(f, 1):
+                    match = todo_pattern.search(line)
+                    if match:
+                        marker = match.group(1).upper()
+                        description = match.group(2).strip()[:50]  # Limit length
+                        points.append(f"[{marker}] {description} ({filepath}:{line_num})")
+
+        except Exception:
+            pass
+
+        return points
+
+    def suggest_resume_points(self, changes: List[Dict]) -> List[str]:
+        """Suggest smart resume points based on changes
+
+        Enhanced with:
+        - Python AST parsing for incomplete functions
+        - TODO/FIXME comment detection
+        - File-type-specific suggestions
+        - Work-in-progress indicators
+        """
+        points = []
+
+        # Analyze recently modified files (limit to 10 most recent)
+        recent_changes = sorted(
+            changes,
+            key=lambda c: c.get('modified', ''),
+            reverse=True
+        )[:10]
+
+        for change in recent_changes:
+            filepath_str = change['file_path']
+            filepath = self.base_dir / filepath_str
+
+            if not filepath.exists():
+                continue
+
+            # Skip if too large or binary
+            if filepath.suffix.lower() in self.BINARY_EXTENSIONS:
+                continue
+
+            try:
+                if filepath.stat().st_size > self.MAX_FILE_SIZE:
+                    continue
+            except OSError:
+                continue
+
+            # Python-specific analysis
+            if filepath.suffix == '.py':
+                py_points = self._analyze_python_file(filepath)
+                points.extend(py_points)
+
+                # Find TODO comments
+                todo_points = self._find_todo_comments(filepath)
+                points.extend(todo_points)
+
+            # File-type-specific suggestions
+            elif filepath.suffix in ['.js', '.ts', '.jsx', '.tsx']:
+                # JavaScript/TypeScript - look for console.log (debugging) or TODO
+                todo_points = self._find_todo_comments(filepath)
+                points.extend(todo_points)
+
+                # Check for debugging code
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        if 'console.log' in content or 'debugger;' in content:
+                            points.append(f"Remove debugging code from {filepath_str}")
+                except Exception:
+                    pass
+
+            # Test files
+            if 'test' in filepath_str.lower():
+                points.append(f"Run and verify tests in {filepath_str}")
+
+            # Configuration files that were modified
+            elif filepath.suffix in ['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg']:
+                points.append(f"Verify configuration changes in {filepath_str}")
+
+        # Check for newly created files
+        created_files = [c for c in changes if c['action'] == 'created']
+        if created_files:
+            points.append(f"Review {len(created_files)} newly created file(s) for completeness")
+
+        # Generic resume point from most recent change
+        if recent_changes and not points:
+            most_recent = recent_changes[0]
             points.append(f"Continue work on {most_recent['file_path']}")
+
+        # Deduplicate and limit
+        points = list(dict.fromkeys(points))  # Remove duplicates while preserving order
+        points = points[:15]  # Limit to top 15
 
         return points if points else ["Resume from last modification"]
 
@@ -536,6 +759,15 @@ def main():
     # Initialize saver
     saver = SessionSaver()
 
+    # Detect session boundary
+    session_start = saver.detect_session_boundary()
+    if session_start:
+        saver.session_start_time = session_start
+        minutes_ago = (datetime.now() - session_start).total_seconds() / 60
+        print(f"Detected session start: {session_start.strftime('%Y-%m-%d %H:%M:%S')} ({minutes_ago:.0f} minutes ago)")
+    else:
+        print(f"Using fallback: last {args.since_minutes} minutes")
+
     print("Collecting session data...")
 
     # Collect changes
@@ -547,6 +779,14 @@ def main():
     if saver.is_git_repo:
         print(f"    - {len(git_changes)} from git")
     print(f"    - {len(fs_changes)} from filesystem scan")
+
+    # Report skipped files
+    if saver.skipped_files['binary'] > 0 or saver.skipped_files['large'] > 0:
+        print(f"  Skipped:")
+        if saver.skipped_files['binary'] > 0:
+            print(f"    - {saver.skipped_files['binary']} binary file(s)")
+        if saver.skipped_files['large'] > 0:
+            print(f"    - {saver.skipped_files['large']} large file(s) (>{saver.MAX_FILE_SIZE:,} bytes)")
 
     # Generate auto-detected data
     auto_detected = {
