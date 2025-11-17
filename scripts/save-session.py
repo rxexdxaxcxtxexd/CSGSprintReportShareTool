@@ -47,6 +47,12 @@ session_index = importlib.util.module_from_spec(spec_index)
 spec_index.loader.exec_module(session_index)
 SessionIndex = session_index.SessionIndex
 
+# Import checkpoint utilities
+spec_utils = importlib.util.spec_from_file_location("checkpoint_utils",
+    os.path.join(os.path.dirname(__file__), "checkpoint_utils.py"))
+checkpoint_utils = importlib.util.module_from_spec(spec_utils)
+spec_utils.loader.exec_module(checkpoint_utils)
+
 
 # ============================================================================
 # PROJECT DETECTION AND SELECTION
@@ -575,71 +581,6 @@ class SessionSaver:
 
         return message
 
-    def _create_session_commit(self, session_data: Dict, checkpoint_file: str, log_file: str) -> Optional[str]:
-        """Create git commit for session changes"""
-        try:
-            print("\n" + "="*70)
-            print("GIT AUTO-COMMIT")
-            print("="*70)
-
-            # Get list of changed files
-            changes = session_data.get('changes', [])
-            if not changes:
-                print("  No changes to commit")
-                print("="*70)
-                return None
-
-            # Collect all file paths
-            changed_files = [change['file_path'] for change in changes]
-
-            # Also add checkpoint and log files
-            changed_files.append(str(Path(checkpoint_file).relative_to(self.base_dir)))
-            changed_files.append(str(Path(log_file).relative_to(self.base_dir)))
-
-            # Add CLAUDE.md if it exists
-            claude_md = self.base_dir / 'CLAUDE.md'
-            if claude_md.exists():
-                changed_files.append('CLAUDE.md')
-
-            print(f"  Staging {len(changed_files)} file(s)...")
-
-            # Stage files
-            if not self._git_add_files(changed_files):
-                print("  Warning: Some files could not be staged")
-
-            # Generate commit message
-            commit_message = self._format_commit_message(session_data, checkpoint_file)
-
-            print("  Creating commit...")
-
-            # Create commit
-            commit_hash = self._git_commit(commit_message)
-
-            if commit_hash:
-                print(f"  ✓ Committed: {commit_hash[:8]}")
-                print(f"  ✓ Branch: {self._get_git_branch()}")
-
-                # Format remote URL for display
-                remote_url = self._get_git_remote_url()
-                if 'github.com' in remote_url:
-                    match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
-                    if match:
-                        remote_url = f"github.com/{match.group(1)}"
-
-                print(f"  ✓ Remote: {remote_url}")
-                print(f"  ✓ Files: {len(changed_files)} changed")
-                print("="*70)
-                return commit_hash
-            else:
-                print("  No changes to commit (or commit failed)")
-                print("="*70)
-                return None
-
-        except Exception as e:
-            print(f"  Error during commit: {e}")
-            print("  Session checkpoint saved, but git commit failed")
-            print("="*70)
-            return None
 
     def _should_exclude_path(self, path: Path) -> bool:
         """Check if path should be excluded from scanning"""
@@ -792,99 +733,15 @@ class SessionSaver:
 
     def infer_session_description(self, changes: List[Dict]) -> str:
         """Generate session description from file changes"""
-        if not changes:
-            return "Work session"
-
-        # Analyze file types and patterns
-        file_types = {}
-        directories = set()
-
-        for change in changes:
-            filepath = Path(change['file_path'])
-            ext = filepath.suffix.lower()
-            directory = filepath.parent
-
-            file_types[ext] = file_types.get(ext, 0) + 1
-            if directory != Path('.'):
-                directories.add(str(directory))
-
-        # Generate description based on patterns
-        descriptions = []
-
-        # Check for specific patterns
-        if any('test' in change['file_path'].lower() for change in changes):
-            descriptions.append("test development")
-
-        if any('README' in change['file_path'] or '.md' in change['file_path'] for change in changes):
-            descriptions.append("documentation updates")
-
-        if '.py' in file_types:
-            descriptions.append(f"Python development ({file_types['.py']} files)")
-
-        if '.js' in file_types or '.ts' in file_types or '.jsx' in file_types or '.tsx' in file_types:
-            count = sum(file_types.get(ext, 0) for ext in ['.js', '.ts', '.jsx', '.tsx'])
-            descriptions.append(f"JavaScript/TypeScript development ({count} files)")
-
-        if any('config' in change['file_path'].lower() or 'setup' in change['file_path'].lower() for change in changes):
-            descriptions.append("configuration changes")
-
-        # If we found patterns, use them
-        if descriptions:
-            return "Work on " + ", ".join(descriptions)
-
-        # Fallback: use directory names
-        if directories:
-            dir_list = list(directories)[:2]
-            return f"Changes in {', '.join(dir_list)}"
-
-        return f"Modified {len(changes)} file(s)"
+        return checkpoint_utils.infer_session_description(changes)
 
     def suggest_resume_points(self, changes: List[Dict]) -> List[str]:
         """Suggest resume points based on changes"""
-        points = []
-
-        # Check for incomplete work indicators
-        for change in changes:
-            filepath = change['file_path']
-
-            if 'test' in filepath.lower() and change['action'] == 'created':
-                points.append(f"Run and verify tests in {filepath}")
-
-            if 'TODO' in filepath or 'FIXME' in filepath:
-                points.append(f"Complete TODO items in {filepath}")
-
-        # Generic resume point
-        if changes:
-            most_recent = max(changes, key=lambda c: c.get('modified', ''))
-            points.append(f"Continue work on {most_recent['file_path']}")
-
-        return points if points else ["Resume from last modification"]
+        return checkpoint_utils.generate_resume_points(changes)
 
     def suggest_next_steps(self, changes: List[Dict]) -> List[str]:
         """Suggest next steps based on changes"""
-        steps = []
-
-        # Analyze patterns
-        has_tests = any('test' in c['file_path'].lower() for c in changes)
-        has_docs = any('.md' in c['file_path'].lower() for c in changes)
-        has_code = any('.py' in c['file_path'] or '.js' in c['file_path'] or '.ts' in c['file_path'] for c in changes)
-
-        if has_code and not has_tests:
-            steps.append("Write tests for new/modified code")
-
-        if has_code and not has_docs:
-            steps.append("Update documentation to reflect code changes")
-
-        if has_tests:
-            steps.append("Run full test suite to ensure no regressions")
-
-        if any(c['action'] == 'created' for c in changes):
-            steps.append("Review newly created files for completeness")
-
-        # Generic next step
-        steps.append("Verify all changes work as expected")
-
-        return steps
+        return checkpoint_utils.generate_next_steps(changes)
 
     def interactive_save(self, auto_detected_data: Dict) -> Dict:
         """Interactive mode - prompt user for input"""
@@ -1049,33 +906,6 @@ class SessionSaver:
         # End session
         checkpoint_file, log_file = logger.end_session()
 
-        # AUTO-COMMIT: Create git commit for session changes
-        commit_hash = None
-        if self.is_git_repo:
-            commit_hash = self._create_session_commit(
-                session_data,
-                checkpoint_file,
-                log_file
-            )
-
-            # If commit was successful, add git info to the checkpoint
-            if commit_hash:
-                # Re-read and update the checkpoint file with git info
-                try:
-                    with open(checkpoint_file, 'r', encoding='utf-8') as f:
-                        checkpoint_data = json.load(f)
-
-                    checkpoint_data['git_commit_hash'] = commit_hash
-                    checkpoint_data['git_branch'] = self._get_git_branch()
-                    checkpoint_data['git_remote_url'] = self._get_git_remote_url()
-
-                    with open(checkpoint_file, 'w', encoding='utf-8') as f:
-                        json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
-
-                    print(f"  ✓ Checkpoint updated with commit info")
-                except Exception as e:
-                    print(f"  Warning: Could not update checkpoint with git info: {e}")
-
         # Register checkpoint in session index
         print("\nRegistering in session index...")
         try:
@@ -1106,25 +936,28 @@ class SessionSaver:
             print(f"Warning: Could not update CLAUDE.md: {e}")
 
         print("\n" + "="*70)
-        print("SESSION SAVED SUCCESSFULLY")
+        print("SESSION CHECKPOINT CREATED")
         print("="*70)
         print(f"\nCheckpoint: {os.path.basename(checkpoint_file)}")
         print(f"Log:        {os.path.basename(log_file)}")
 
-        # Show git commit info if available
-        if commit_hash:
-            print(f"\nGit Commit: {commit_hash[:8]}")
-            print(f"Branch:     {self._get_git_branch()}")
-            remote_url = self._get_git_remote_url()
-            if 'github.com' in remote_url:
-                match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
-                if match:
-                    remote_url = f"github.com/{match.group(1)}"
-            print(f"Remote:     {remote_url}")
-
         print(f"\nFiles tracked: {len(session_data.get('changes', []))}")
         print(f"Resume points: {len(session_data.get('resume_points', []))}")
         print(f"Next steps:    {len(session_data.get('next_steps', []))}")
+
+        # Instructions for manual commit (unified workflow)
+        if self.is_git_repo:
+            print("\n" + "-"*70)
+            print("NEXT STEP: Create Git Commit")
+            print("-"*70)
+            print("\nTo finalize this checkpoint, commit your changes:")
+            print(f"  git add .")
+            print(f"  git commit -m \"Your commit message\"")
+            print("\nThe post-commit hook will automatically link this checkpoint")
+            print("to your commit and update it with commit information.")
+            print()
+            print("Need to install the hook? Run:")
+            print("  python scripts/install-hooks.py")
 
         print("\nTo resume in a new session:")
         print("  python scripts/resume-session.py")
