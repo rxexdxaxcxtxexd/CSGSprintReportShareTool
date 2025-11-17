@@ -10,23 +10,14 @@ This script helps resume work in a new Claude Code session by:
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
 from rich import box
-
-# Import resume point generator for dependency formatting
-import importlib.util
-spec_resume = importlib.util.spec_from_file_location("resume_point_generator",
-    os.path.join(os.path.dirname(__file__), "resume_point_generator.py"))
-resume_point_generator = importlib.util.module_from_spec(spec_resume)
-spec_resume.loader.exec_module(resume_point_generator)
-format_dependency_info = resume_point_generator.format_dependency_info
 
 
 class SessionResumer:
@@ -168,46 +159,29 @@ class SessionResumer:
                 emoji = {"created": "➕", "modified": "✏️", "deleted": "❌"}.get(action, "📝")
                 self.console.print(f"  {emoji} [{action}] {change['file_path']}")
 
+        # Git Commit Information
+        git_commit = checkpoint.get('git_commit_hash')
+        if git_commit:
+            self.console.print(f"\n[bold cyan]🔗 Git Commit:[/bold cyan]")
+            self.console.print(f"  Hash:   {git_commit[:8]}")
+            if checkpoint.get('git_branch'):
+                self.console.print(f"  Branch: {checkpoint['git_branch']}")
+            if checkpoint.get('git_remote_url'):
+                remote_url = checkpoint['git_remote_url']
+                # Shorten GitHub URLs
+                if 'github.com' in remote_url:
+                    import re
+                    match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+                    if match:
+                        remote_url = f"github.com/{match.group(1)}"
+                self.console.print(f"  Remote: {remote_url}")
+
         # Problems
         problems = checkpoint.get('problems_encountered', [])
         if problems:
             self.console.print(f"\n[bold red]⚠️ Problems Encountered:[/bold red]")
             for problem in problems:
                 self.console.print(f"  • {problem}")
-
-        # Dependencies (Phase 2.2: Display dependency information)
-        dependencies = checkpoint.get('dependencies', {})
-        if dependencies:
-            self.console.print(f"\n[bold blue]🔗 Dependency Analysis:[/bold blue]")
-
-            # Summary
-            high_impact = [f for f, d in dependencies.items() if d.get('impact_score', 0) >= 70]
-            medium_impact = [f for f, d in dependencies.items() if 50 <= d.get('impact_score', 0) < 70]
-
-            if high_impact:
-                self.console.print(f"  [bold red]⚠️ {len(high_impact)} high-impact file(s) - test thoroughly![/bold red]")
-            if medium_impact:
-                self.console.print(f"  [yellow]⚠️ {len(medium_impact)} medium-impact file(s)[/yellow]")
-
-            # Show top 3 high-impact files
-            sorted_deps = sorted(
-                dependencies.items(),
-                key=lambda x: x[1].get('impact_score', 0),
-                reverse=True
-            )[:3]
-
-            for filepath, dep in sorted_deps:
-                impact = dep.get('impact_score', 0)
-                used_by = dep.get('used_by_count', 0)
-
-                if impact >= 70:
-                    style = "bold red"
-                elif impact >= 50:
-                    style = "yellow"
-                else:
-                    style = "dim"
-
-                self.console.print(f"  [{style}]• {filepath} (impact: {impact}, used by: {used_by})[/{style}]")
 
         # Resume Points
         resume_points = checkpoint.get('resume_points', [])
@@ -282,50 +256,29 @@ class SessionResumer:
                 action_symbol = {"created": "+", "modified": "*", "deleted": "-"}.get(change['action'], "~")
                 print(f"  {action_symbol} {change['file_path']}")
 
+        # Git Commit Information
+        git_commit = checkpoint.get('git_commit_hash')
+        if git_commit:
+            print(f"\n[GIT COMMIT]")
+            print(f"  Hash: {git_commit[:8]}")
+            if checkpoint.get('git_branch'):
+                print(f"  Branch: {checkpoint['git_branch']}")
+            if checkpoint.get('git_remote_url'):
+                remote_url = checkpoint['git_remote_url']
+                # Shorten GitHub URLs
+                if 'github.com' in remote_url:
+                    import re
+                    match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+                    if match:
+                        remote_url = f"github.com/{match.group(1)}"
+                print(f"  Remote: {remote_url}")
+
         # Problems
         problems = checkpoint.get('problems_encountered', [])
         if problems:
             print(f"\n[PROBLEMS ENCOUNTERED]")
             for problem in problems:
                 print(f"  ! {problem}")
-
-        # Dependencies (Phase 2.2: Display dependency information)
-        dependencies = checkpoint.get('dependencies', {})
-        if dependencies:
-            print(f"\n[DEPENDENCY ANALYSIS]")
-
-            # Summary
-            high_impact = [f for f, d in dependencies.items() if d.get('impact_score', 0) >= 70]
-            medium_impact = [f for f, d in dependencies.items() if 50 <= d.get('impact_score', 0) < 70]
-
-            if high_impact:
-                print(f"  [!] {len(high_impact)} high-impact file(s) - test thoroughly!")
-            if medium_impact:
-                print(f"  [WARNING] {len(medium_impact)} medium-impact file(s)")
-
-            # Show top 3 high-impact files
-            sorted_deps = sorted(
-                dependencies.items(),
-                key=lambda x: x[1].get('impact_score', 0),
-                reverse=True
-            )[:3]
-
-            print("\n  Top Impact Files:")
-            for filepath, dep in sorted_deps:
-                impact = dep.get('impact_score', 0)
-                used_by = dep.get('used_by_count', 0)
-                marker = "[!]" if impact >= 70 else "[*]" if impact >= 50 else "[-]"
-                print(f"    {marker} {filepath}")
-                print(f"        Impact: {impact}/100, Used by: {used_by} file(s)")
-
-                # Show who uses this file
-                if dep.get('used_by'):
-                    users = dep['used_by'][:3]
-                    if len(dep['used_by']) > 3:
-                        users_str = ', '.join(users) + f" (+{len(dep['used_by']) - 3} more)"
-                    else:
-                        users_str = ', '.join(users)
-                    print(f"        Used by: {users_str}")
 
         # Resume Points
         resume_points = checkpoint.get('resume_points', [])
@@ -406,29 +359,10 @@ class SessionResumer:
         if completed:
             lines.append(f"\n**Progress:** {len(completed)} tasks completed")
 
-        # Dependency information (Phase 2.2)
-        dependencies = checkpoint.get('dependencies', {})
-        if dependencies:
-            high_impact = [f for f, d in dependencies.items() if d.get('impact_score', 0) >= 70]
-            medium_impact = [f for f, d in dependencies.items() if 50 <= d.get('impact_score', 0) < 70]
-
-            if high_impact or medium_impact:
-                lines.append("\n**Dependency Impact:**")
-                if high_impact:
-                    lines.append(f"- [!] {len(high_impact)} high-impact files - test thoroughly")
-                    for filepath in high_impact[:3]:
-                        dep = dependencies[filepath]
-                        lines.append(f"  - {filepath} (impact: {dep['impact_score']}, used by: {dep['used_by_count']} files)")
-                if medium_impact and len(high_impact) < 3:
-                    remaining = 3 - len(high_impact)
-                    for filepath in medium_impact[:remaining]:
-                        dep = dependencies[filepath]
-                        lines.append(f"  - {filepath} (impact: {dep['impact_score']}, used by: {dep['used_by_count']} files)")
-
         resume_points = checkpoint.get('resume_points', [])
         if resume_points:
             lines.append("\n**Resume from:**")
-            for point in resume_points[:10]:  # Limit to top 10 for summary
+            for point in resume_points:
                 lines.append(f"- {point}")
 
         next_steps = checkpoint.get('next_steps', [])

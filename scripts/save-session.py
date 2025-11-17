@@ -33,60 +33,345 @@ session_logger = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(session_logger)
 SessionLogger = session_logger.SessionLogger
 
-# Import dependency analyzer
-spec_dep = importlib.util.spec_from_file_location("dependency_analyzer",
-    os.path.join(os.path.dirname(__file__), "dependency_analyzer.py"))
-dependency_analyzer = importlib.util.module_from_spec(spec_dep)
-spec_dep.loader.exec_module(dependency_analyzer)
-DependencyAnalyzer = dependency_analyzer.DependencyAnalyzer
+# Import project tracker
+spec_tracker = importlib.util.spec_from_file_location("project_tracker",
+    os.path.join(os.path.dirname(__file__), "project_tracker.py"))
+project_tracker = importlib.util.module_from_spec(spec_tracker)
+spec_tracker.loader.exec_module(project_tracker)
+ProjectTracker = project_tracker.ProjectTracker
 
-# Import resume point generator
-spec_resume = importlib.util.spec_from_file_location("resume_point_generator",
-    os.path.join(os.path.dirname(__file__), "resume_point_generator.py"))
-resume_point_generator = importlib.util.module_from_spec(spec_resume)
-spec_resume.loader.exec_module(resume_point_generator)
-enhance_resume_points = resume_point_generator.enhance_resume_points
+
+# ============================================================================
+# PROJECT DETECTION AND SELECTION
+# ============================================================================
+
+def get_git_info(directory: Path) -> Optional[Dict]:
+    """Get git repository information for a directory"""
+    try:
+        # Check if it's a git repo
+        result = subprocess.run(
+            ['git', 'rev-parse', '--is-inside-work-tree'],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode != 0:
+            return None
+
+        # Get remote URL
+        remote_result = subprocess.run(
+            ['git', 'config', '--get', 'remote.origin.url'],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        remote_url = remote_result.stdout.strip() if remote_result.returncode == 0 else "No remote"
+
+        # Get current branch
+        branch_result = subprocess.run(
+            ['git', 'branch', '--show-current'],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+
+        # Format remote URL for display (shorten GitHub URLs)
+        display_url = remote_url
+        if 'github.com' in remote_url:
+            # Extract repo name from URL
+            match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+            if match:
+                display_url = f"github.com/{match.group(1)}"
+
+        return {
+            'remote_url': remote_url,
+            'display_url': display_url,
+            'branch': branch,
+            'is_git_repo': True
+        }
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return None
+
+
+def discover_projects() -> List[Dict]:
+    """Discover potential project directories"""
+    projects = []
+    home = Path.home()
+
+    # Check current working directory
+    cwd = Path.cwd()
+    if cwd != home:
+        git_info = get_git_info(cwd)
+        if git_info:
+            projects.append({
+                'path': cwd,
+                'name': cwd.name,
+                'git_info': git_info,
+                'source': 'current'
+            })
+
+    # Check common project locations
+    project_dirs = [
+        home / 'Projects',
+        home / 'Codebases',
+        home / 'projects',
+        home / 'repos',
+        home / 'code',
+        home / 'dev'
+    ]
+
+    for project_dir in project_dirs:
+        if not project_dir.exists():
+            continue
+
+        try:
+            # Look for subdirectories with .git
+            for subdir in project_dir.iterdir():
+                if not subdir.is_dir():
+                    continue
+
+                # Skip hidden directories
+                if subdir.name.startswith('.'):
+                    continue
+
+                git_info = get_git_info(subdir)
+                if git_info:
+                    # Skip if already added (e.g., from cwd)
+                    if any(p['path'] == subdir for p in projects):
+                        continue
+
+                    projects.append({
+                        'path': subdir,
+                        'name': subdir.name,
+                        'git_info': git_info,
+                        'source': 'discovered'
+                    })
+
+                # Limit to avoid excessive scanning
+                if len(projects) >= 20:
+                    break
+        except (PermissionError, OSError):
+            continue
+
+    return projects
+
+
+def prompt_for_project_directory() -> Path:
+    """Interactive prompt to select a project directory"""
+    projects = discover_projects()
+
+    if not projects:
+        print("\n" + "="*70)
+        print("ERROR: No git repositories found")
+        print("="*70)
+        print("\nSession tracking requires a git repository.")
+        print("Please:")
+        print("  1. Navigate to a project directory with git")
+        print("  2. Or initialize git in your current directory:")
+        print("     git init && git remote add origin <url>")
+        print("="*70)
+        sys.exit(1)
+
+    print("\n" + "="*70)
+    print("SELECT PROJECT DIRECTORY")
+    print("="*70)
+    print("\nAvailable projects:\n")
+
+    for i, project in enumerate(projects, 1):
+        git = project['git_info']
+        marker = " (current)" if project['source'] == 'current' else ""
+        print(f"  {i}. {project['name']}{marker}")
+        print(f"     Path:   {project['path']}")
+        print(f"     Git:    {git['display_url']}")
+        print(f"     Branch: {git['branch']}")
+        print()
+
+    print(f"  0. Enter custom path")
+    print()
+
+    while True:
+        try:
+            choice = input("Select project (number): ").strip()
+
+            if choice == '0':
+                custom_path = input("Enter project directory path: ").strip()
+                custom_path = Path(custom_path).expanduser().resolve()
+
+                if not custom_path.exists():
+                    print(f"Error: Directory does not exist: {custom_path}")
+                    continue
+
+                git_info = get_git_info(custom_path)
+                if not git_info:
+                    print(f"Error: Not a git repository: {custom_path}")
+                    continue
+
+                return custom_path
+
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(projects):
+                selected = projects[choice_num - 1]
+                print(f"\n✓ Selected: {selected['name']}")
+                print(f"  Path: {selected['path']}")
+                print(f"  Git:  {selected['git_info']['display_url']}")
+                print(f"  Branch: {selected['git_info']['branch']}")
+                return selected['path']
+            else:
+                print(f"Error: Please enter a number between 0 and {len(projects)}")
+        except ValueError:
+            print("Error: Please enter a valid number")
+        except KeyboardInterrupt:
+            print("\n\nSession tracking cancelled.")
+            sys.exit(0)
+
+
+def print_project_context(base_dir: Path, is_git_repo: bool, auto_commit: bool = True):
+    """Display project context information"""
+    print("\n" + "="*70)
+    print("PROJECT CONTEXT")
+    print("="*70)
+
+    print(f"  Directory: {base_dir}")
+
+    if is_git_repo:
+        git_info = get_git_info(base_dir)
+        if git_info:
+            print(f"  Git Repo:  {git_info['display_url']}")
+            print(f"  Branch:    {git_info['branch']}")
+            print(f"  Auto-commit: {'ENABLED' if auto_commit else 'DISABLED'}")
+    else:
+        print("  Git: Not a git repository")
+        print("  Warning: Auto-commit disabled")
+
+    print("="*70)
+
+
+def handle_project_switch(current_project: Dict[str, Any],
+                         active_state: Dict[str, Any]) -> str:
+    """
+    Prompt user when a project switch is detected.
+
+    Args:
+        current_project: Current project metadata
+        active_state: Previous active project state
+
+    Returns:
+        User's choice: 'checkpoint', 'discard', or 'cancel'
+    """
+    tracker = ProjectTracker()
+    active_project = active_state['project']
+
+    print("\n" + "="*70)
+    print("⚠️ PROJECT SWITCH DETECTED")
+    print("="*70)
+
+    print(f"\nPrevious project: {tracker.get_project_summary(active_project)}")
+    print(f"Current project:  {tracker.get_project_summary(current_project)}")
+
+    # Check if previous project has uncommitted work
+    has_uncommitted = active_state.get('has_uncommitted_changes', False)
+
+    if has_uncommitted:
+        print(f"\n⚠️  WARNING: You have uncommitted work in the previous project!")
+        print(f"   Last checkpoint: {tracker.format_time_ago(active_state.get('last_checkpoint', ''))}")
+
+    print("\nWhat would you like to do?")
+    print("  1. Create checkpoint for previous project first (recommended)")
+    print("  2. Discard previous project changes and track current project")
+    print("  3. Cancel (don't create any checkpoint)")
+    print()
+
+    while True:
+        try:
+            choice = input("Your choice (1-3): ").strip()
+
+            if choice == '1':
+                return 'checkpoint'
+            elif choice == '2':
+                confirm = input("⚠️  Confirm discard? Type 'yes' to confirm: ").strip().lower()
+                if confirm == 'yes':
+                    return 'discard'
+                else:
+                    print("Discard cancelled. Please choose again.")
+                    continue
+            elif choice == '3':
+                return 'cancel'
+            else:
+                print("Invalid choice. Please enter 1, 2, or 3.")
+        except (KeyboardInterrupt, EOFError):
+            print("\n\nOperation cancelled.")
+            return 'cancel'
 
 
 class SessionSaver:
     """Intelligently collect and save session data"""
 
-    # File size and type limits
-    MAX_FILE_SIZE = 1_000_000  # 1MB
-    BINARY_EXTENSIONS = {
-        '.exe', '.dll', '.so', '.dylib', '.bin',
-        '.zip', '.tar', '.gz', '.rar', '.7z',
-        '.mp4', '.avi', '.mov', '.mp3', '.wav',
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.ico',
-        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-        '.db', '.sqlite', '.sqlite3',
-        '.whl', '.egg'
-    }
-
     def __init__(self, base_dir: str = None):
         """Initialize the session saver"""
         if base_dir is None:
-            base_dir = Path.home()
+            base_dir = Path.cwd()
 
         self.base_dir = Path(base_dir)
+
+        # HOME DIRECTORY GUARD: Refuse to track from home directory
+        if self.base_dir == Path.home():
+            print("\n" + "="*70)
+            print("ERROR: Cannot track session from home directory")
+            print("="*70)
+            print("\nSession tracking requires a project directory with git.")
+            print("Your current directory is your home directory, which would")
+            print("track personal files, system folders, and unrelated projects.\n")
+
+            # Prompt for project selection
+            self.base_dir = prompt_for_project_directory()
+
         self.session_start_time = None
         self.is_git_repo = self._check_git_repo()
-        self.skipped_files = {'large': 0, 'binary': 0}  # Track skipped files
-        self.history_path = Path.home() / '.claude' / 'history.jsonl'
+
+        # CRITICAL: Hard block if home directory is a git repository
+        if self.base_dir == Path.home() and self.is_git_repo:
+            print("\n" + "="*70)
+            print("CRITICAL ERROR: Home directory is a git repository")
+            print("="*70)
+            print("\nThis is EXTREMELY DANGEROUS and will track:")
+            print("  • Personal files and documents")
+            print("  • System configuration files")
+            print("  • All your projects (mixed together)")
+            print("  • Private data")
+            print("\nRefusing to proceed.")
+            print("\nTo fix this:")
+            print("  1. Use a proper project directory for your work")
+            print("  2. Or remove .git from your home directory:")
+            print("     cd ~")
+            print("     rm -rf .git")
+            print("\nSession tracking ABORTED.")
+            print("="*70)
+            sys.exit(1)
 
         # Directories to exclude from scanning
         self.exclude_dirs = {
-            '.git', '.claude-sessions', '.claude', '__pycache__', 'node_modules',
+            '.git', '.claude-sessions', '__pycache__', 'node_modules',
             '.venv', 'venv', 'env', '.tox', '.pytest_cache',
             'dist', 'build', '.eggs', '*.egg-info',
-            '.mypy_cache', '.coverage', 'htmlcov'
+            '.mypy_cache', '.coverage', 'htmlcov',
+            # Home directory user folders (extra safety)
+            'AppData', 'Documents', 'Downloads', 'Pictures', 'Music',
+            'Videos', 'Desktop', 'OneDrive', 'Favorites', 'Links',
+            'Searches', 'Saved Games', 'Contacts', 'IntelGraphicsProfiles'
         }
 
         # File patterns to exclude
         self.exclude_patterns = {
             '*.pyc', '*.pyo', '*.pyd', '.DS_Store', '*.swp', '*.swo',
             '*.log', '*.tmp', '*.temp', '*.cache', '*.bak', '*.backup',
-            'thumbs.db', '*.class', '*.o', '*.so', '*.dylib', '*.dll'
+            'thumbs.db', '*.class', '*.o', '*.so', '*.dylib', '*.dll',
+            # System files
+            'NTUSER.*', '*.lnk', 'ntuser.*'
         }
 
     def _check_git_repo(self) -> bool:
@@ -103,61 +388,250 @@ class SessionSaver:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
-    def detect_session_boundary(self, gap_minutes: int = 60) -> Optional[datetime]:
-        """Detect session start by finding gaps in history.jsonl
+    def _get_git_remote_url(self) -> str:
+        """Get git remote URL"""
+        try:
+            result = subprocess.run(
+                ['git', 'config', '--get', 'remote.origin.url'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return "No remote"
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return "Unknown"
 
-        Args:
-            gap_minutes: Minimum gap size to consider a session boundary (default: 60)
+    def _get_git_branch(self) -> str:
+        """Get current git branch"""
+        try:
+            result = subprocess.run(
+                ['git', 'branch', '--show-current'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return "unknown"
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return "unknown"
 
-        Returns:
-            Session start time, or None if can't detect
-        """
-        if not self.history_path.exists():
+    def _get_git_head_hash(self) -> Optional[str]:
+        """Get current HEAD commit hash"""
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return None
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             return None
 
-        try:
-            # Read history entries (last 200 to keep it fast)
-            entries = []
-            with open(self.history_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        if 'timestamp' in entry:
-                            entries.append(entry)
-                    except json.JSONDecodeError:
-                        continue
+    def _collect_project_metadata(self) -> Dict[str, Any]:
+        """
+        Collect comprehensive project identification metadata.
 
-            if not entries:
+        Returns dict with:
+        - git_remote_url: Primary identifier (portable across machines)
+        - absolute_path: Fallback identifier (machine-specific)
+        - name: Human-readable project name
+        - git_head_hash: Current commit (state validation)
+        - git_branch: Current branch
+        """
+        metadata = {
+            'absolute_path': str(self.base_dir.resolve()),
+            'name': self.base_dir.name,
+        }
+
+        # Add git information if available
+        if self.is_git_repo:
+            metadata['git_remote_url'] = self._get_git_remote_url()
+            metadata['git_branch'] = self._get_git_branch()
+            metadata['git_head_hash'] = self._get_git_head_hash()
+
+        return metadata
+
+    def has_uncommitted_changes(self, base_dir: Path) -> bool:
+        """
+        Check if there are uncommitted git changes.
+
+        Args:
+            base_dir: Directory to check
+
+        Returns:
+            True if there are uncommitted changes
+        """
+        try:
+            result = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                cwd=base_dir,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                return bool(result.stdout.strip())
+
+            return False
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+
+    def _git_add_files(self, files: List[str]) -> bool:
+        """Stage files for commit"""
+        try:
+            result = subprocess.run(
+                ['git', 'add'] + files,
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"Warning: Failed to stage files: {e}")
+            return False
+
+    def _git_commit(self, message: str) -> Optional[str]:
+        """Create git commit and return commit hash"""
+        try:
+            result = subprocess.run(
+                ['git', 'commit', '-m', message],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                # Check if it's because there's nothing to commit
+                if 'nothing to commit' in result.stdout or 'nothing to commit' in result.stderr:
+                    return None
+                print(f"Warning: Git commit failed: {result.stderr}")
                 return None
 
-            # Get recent entries (last 200)
-            recent_entries = entries[-200:]
+            # Get the commit hash
+            hash_result = subprocess.run(
+                ['git', 'rev-parse', 'HEAD'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
 
-            # Find the most recent gap > gap_minutes
-            gap_threshold = timedelta(minutes=gap_minutes)
-            session_start = None
+            if hash_result.returncode == 0:
+                return hash_result.stdout.strip()
 
-            for i in range(len(recent_entries) - 1, 0, -1):
-                current_ts = datetime.fromtimestamp(recent_entries[i]['timestamp'] / 1000)
-                prev_ts = datetime.fromtimestamp(recent_entries[i-1]['timestamp'] / 1000)
+            return "unknown"
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"Warning: Git commit failed: {e}")
+            return None
 
-                gap = current_ts - prev_ts
+    def _format_commit_message(self, session_data: Dict, checkpoint_file: str) -> str:
+        """Generate formatted commit message for session checkpoint"""
+        description = session_data.get('description', 'Work session')
+        changes = session_data.get('changes', [])
 
-                if gap > gap_threshold:
-                    # Found a gap - session starts after this gap
-                    session_start = current_ts
-                    break
+        # Start with session description
+        message = f"Session checkpoint: {description}\n\n"
 
-            # If no gap found, use the earliest entry in recent history
-            if session_start is None and recent_entries:
-                session_start = datetime.fromtimestamp(recent_entries[0]['timestamp'] / 1000)
+        # Add session metadata
+        message += f"Session ID: {checkpoint_file.split('-')[1] if '-' in checkpoint_file else 'unknown'}\n"
+        message += f"Timestamp: {datetime.now().isoformat()}\n"
+        message += f"Files changed: {len(changes)}\n"
+        message += f"Checkpoint: {os.path.basename(checkpoint_file)}\n\n"
 
-            return session_start
+        # Add change summary (limit to 10 files)
+        if changes:
+            message += "Changes:\n"
+            for i, change in enumerate(changes[:10]):
+                action = change.get('action', 'modified')
+                filepath = change.get('file_path', 'unknown')
+                message += f"- {filepath} ({action})\n"
+
+            if len(changes) > 10:
+                message += f"... and {len(changes) - 10} more files\n"
+
+        # Add footer
+        message += "\n🤖 Generated with Claude Code\n"
+        message += "https://claude.com/claude-code\n\n"
+        message += "Co-authored-by: Claude <noreply@anthropic.com>"
+
+        return message
+
+    def _create_session_commit(self, session_data: Dict, checkpoint_file: str, log_file: str) -> Optional[str]:
+        """Create git commit for session changes"""
+        try:
+            print("\n" + "="*70)
+            print("GIT AUTO-COMMIT")
+            print("="*70)
+
+            # Get list of changed files
+            changes = session_data.get('changes', [])
+            if not changes:
+                print("  No changes to commit")
+                print("="*70)
+                return None
+
+            # Collect all file paths
+            changed_files = [change['file_path'] for change in changes]
+
+            # Also add checkpoint and log files
+            changed_files.append(str(Path(checkpoint_file).relative_to(self.base_dir)))
+            changed_files.append(str(Path(log_file).relative_to(self.base_dir)))
+
+            # Add CLAUDE.md if it exists
+            claude_md = self.base_dir / 'CLAUDE.md'
+            if claude_md.exists():
+                changed_files.append('CLAUDE.md')
+
+            print(f"  Staging {len(changed_files)} file(s)...")
+
+            # Stage files
+            if not self._git_add_files(changed_files):
+                print("  Warning: Some files could not be staged")
+
+            # Generate commit message
+            commit_message = self._format_commit_message(session_data, checkpoint_file)
+
+            print("  Creating commit...")
+
+            # Create commit
+            commit_hash = self._git_commit(commit_message)
+
+            if commit_hash:
+                print(f"  ✓ Committed: {commit_hash[:8]}")
+                print(f"  ✓ Branch: {self._get_git_branch()}")
+
+                # Format remote URL for display
+                remote_url = self._get_git_remote_url()
+                if 'github.com' in remote_url:
+                    match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+                    if match:
+                        remote_url = f"github.com/{match.group(1)}"
+
+                print(f"  ✓ Remote: {remote_url}")
+                print(f"  ✓ Files: {len(changed_files)} changed")
+                print("="*70)
+                return commit_hash
+            else:
+                print("  No changes to commit (or commit failed)")
+                print("="*70)
+                return None
 
         except Exception as e:
-            print(f"Warning: Could not detect session boundary: {e}")
+            print(f"  Error during commit: {e}")
+            print("  Session checkpoint saved, but git commit failed")
+            print("="*70)
             return None
 
     def _should_exclude_path(self, path: Path) -> bool:
@@ -231,18 +705,9 @@ class SessionSaver:
         return changes
 
     def collect_file_changes(self, since_minutes: int = 240, max_depth: int = 3) -> List[Dict]:
-        """Collect file changes based on modification time
-
-        Uses session_start_time if available, otherwise falls back to since_minutes
-        """
+        """Collect file changes based on modification time"""
         changes = []
-
-        # Use session_start_time if detected, otherwise use since_minutes
-        if self.session_start_time:
-            cutoff_time = self.session_start_time
-        else:
-            cutoff_time = datetime.now() - timedelta(minutes=since_minutes)
-
+        cutoff_time = datetime.now() - timedelta(minutes=since_minutes)
         max_files = 100  # Limit to prevent excessive scanning
 
         try:
@@ -270,21 +735,8 @@ class SessionSaver:
                         continue
 
                     try:
-                        # Check file stats
-                        file_stats = filepath.stat()
-
-                        # Skip binary files
-                        if filepath.suffix.lower() in self.BINARY_EXTENSIONS:
-                            self.skipped_files['binary'] += 1
-                            continue
-
-                        # Skip large files
-                        if file_stats.st_size > self.MAX_FILE_SIZE:
-                            self.skipped_files['large'] += 1
-                            continue
-
                         # Check modification time
-                        mtime = datetime.fromtimestamp(file_stats.st_mtime)
+                        mtime = datetime.fromtimestamp(filepath.stat().st_mtime)
 
                         if mtime > cutoff_time:
                             # Determine if created or modified
@@ -323,63 +775,6 @@ class SessionSaver:
                 merged[filepath] = change
 
         return list(merged.values())
-
-    def collect_dependencies(self, changed_files: List[str]) -> Dict:
-        """Analyze cross-file dependencies for changed files
-
-        Args:
-            changed_files: List of relative file paths that changed
-
-        Returns:
-            Dict mapping file paths to FileDependency objects (as dicts)
-        """
-        try:
-            # Only analyze Python files
-            python_files = [f for f in changed_files if f.endswith('.py')]
-
-            if not python_files:
-                return {}
-
-            # Performance guard: skip if too many files
-            if len(python_files) > 50:
-                print(f"  Skipping dependency analysis ({len(python_files)} files, limit is 50)")
-                return {}
-
-            print(f"  Analyzing dependencies for {len(python_files)} Python file(s)...")
-
-            # Run dependency analysis
-            analyzer = DependencyAnalyzer(
-                base_dir=self.base_dir,
-                changed_files=python_files,
-                use_cache=True  # Phase 4.1: Enable caching
-            )
-            dependencies = analyzer.analyze_dependencies()
-
-            # Convert FileDependency objects to dicts for JSON serialization
-            from dataclasses import asdict
-            dependencies_dict = {
-                filepath: asdict(dep)
-                for filepath, dep in dependencies.items()
-            }
-
-            # Print cache statistics
-            if analyzer.cache_hits > 0 or analyzer.cache_misses > 0:
-                total = analyzer.cache_hits + analyzer.cache_misses
-                hit_rate = (analyzer.cache_hits / total * 100) if total > 0 else 0
-                print(f"  Cache: {analyzer.cache_hits} hits, {analyzer.cache_misses} misses ({hit_rate:.1f}% hit rate)")
-
-            # Print summary
-            high_impact = [d for d in dependencies.values() if d.impact_score >= 70]
-            if high_impact:
-                print(f"  Found {len(high_impact)} high-impact file(s) (score >= 70)")
-                for dep in high_impact[:3]:  # Show top 3
-                    print(f"    - {dep.file_path} (used by {dep.used_by_count} file(s), score: {dep.impact_score})")
-
-            return dependencies_dict
-
-        except Exception as e:
-            print(f"  Warning: Dependency analysis failed: {e}")
-            return {}
 
     def parse_todo_items(self) -> List[Dict]:
         """Extract completed todo items from the session"""
@@ -437,154 +832,24 @@ class SessionSaver:
 
         return f"Modified {len(changes)} file(s)"
 
-    def _analyze_python_file(self, filepath: Path) -> List[str]:
-        """Analyze Python file for incomplete work using AST
-
-        Returns list of specific resume points found in the file
-        """
-        points = []
-
-        try:
-            import ast
-
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # Parse AST
-            try:
-                tree = ast.parse(content, filename=str(filepath))
-            except SyntaxError:
-                # If there's a syntax error, that's definitely incomplete work!
-                points.append(f"Fix syntax error in {filepath}")
-                return points
-
-            # Find incomplete functions (only has pass or docstring)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    # Check if function body is just pass or docstring
-                    body = node.body
-                    if len(body) == 1:
-                        if isinstance(body[0], ast.Pass):
-                            points.append(f"Implement {node.name}() in {filepath}:{node.lineno}")
-                        elif isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Str):
-                            # Just a docstring, no implementation
-                            points.append(f"Implement {node.name}() in {filepath}:{node.lineno}")
-
-                    # Check for TODO/FIXME/HACK in function
-                    if len(body) > 0 and isinstance(body[0], ast.Expr):
-                        if isinstance(body[0].value, (ast.Str, ast.Constant)):
-                            docstring = ast.get_docstring(node) or ""
-                            if any(marker in docstring.upper() for marker in ['TODO', 'FIXME', 'HACK', 'XXX']):
-                                points.append(f"Address TODO in {node.name}() at {filepath}:{node.lineno}")
-
-        except Exception:
-            # Silently fail - not critical
-            pass
-
-        return points
-
-    def _find_todo_comments(self, filepath: Path) -> List[str]:
-        """Find TODO/FIXME/HACK comments in file
-
-        Returns list of resume points for TODO items
-        """
-        points = []
-        todo_pattern = re.compile(r'#\s*(TODO|FIXME|HACK|XXX|NOTE|OPTIMIZE):?\s*(.+)', re.IGNORECASE)
-
-        try:
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                for line_num, line in enumerate(f, 1):
-                    match = todo_pattern.search(line)
-                    if match:
-                        marker = match.group(1).upper()
-                        description = match.group(2).strip()[:50]  # Limit length
-                        points.append(f"[{marker}] {description} ({filepath}:{line_num})")
-
-        except Exception:
-            pass
-
-        return points
-
     def suggest_resume_points(self, changes: List[Dict]) -> List[str]:
-        """Suggest smart resume points based on changes
-
-        Enhanced with:
-        - Python AST parsing for incomplete functions
-        - TODO/FIXME comment detection
-        - File-type-specific suggestions
-        - Work-in-progress indicators
-        """
+        """Suggest resume points based on changes"""
         points = []
 
-        # Analyze recently modified files (limit to 10 most recent)
-        recent_changes = sorted(
-            changes,
-            key=lambda c: c.get('modified', ''),
-            reverse=True
-        )[:10]
+        # Check for incomplete work indicators
+        for change in changes:
+            filepath = change['file_path']
 
-        for change in recent_changes:
-            filepath_str = change['file_path']
-            filepath = self.base_dir / filepath_str
+            if 'test' in filepath.lower() and change['action'] == 'created':
+                points.append(f"Run and verify tests in {filepath}")
 
-            if not filepath.exists():
-                continue
+            if 'TODO' in filepath or 'FIXME' in filepath:
+                points.append(f"Complete TODO items in {filepath}")
 
-            # Skip if too large or binary
-            if filepath.suffix.lower() in self.BINARY_EXTENSIONS:
-                continue
-
-            try:
-                if filepath.stat().st_size > self.MAX_FILE_SIZE:
-                    continue
-            except OSError:
-                continue
-
-            # Python-specific analysis
-            if filepath.suffix == '.py':
-                py_points = self._analyze_python_file(filepath)
-                points.extend(py_points)
-
-                # Find TODO comments
-                todo_points = self._find_todo_comments(filepath)
-                points.extend(todo_points)
-
-            # File-type-specific suggestions
-            elif filepath.suffix in ['.js', '.ts', '.jsx', '.tsx']:
-                # JavaScript/TypeScript - look for console.log (debugging) or TODO
-                todo_points = self._find_todo_comments(filepath)
-                points.extend(todo_points)
-
-                # Check for debugging code
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        if 'console.log' in content or 'debugger;' in content:
-                            points.append(f"Remove debugging code from {filepath_str}")
-                except Exception:
-                    pass
-
-            # Test files
-            if 'test' in filepath_str.lower():
-                points.append(f"Run and verify tests in {filepath_str}")
-
-            # Configuration files that were modified
-            elif filepath.suffix in ['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg']:
-                points.append(f"Verify configuration changes in {filepath_str}")
-
-        # Check for newly created files
-        created_files = [c for c in changes if c['action'] == 'created']
-        if created_files:
-            points.append(f"Review {len(created_files)} newly created file(s) for completeness")
-
-        # Generic resume point from most recent change
-        if recent_changes and not points:
-            most_recent = recent_changes[0]
+        # Generic resume point
+        if changes:
+            most_recent = max(changes, key=lambda c: c.get('modified', ''))
             points.append(f"Continue work on {most_recent['file_path']}")
-
-        # Deduplicate and limit
-        points = list(dict.fromkeys(points))  # Remove duplicates while preserving order
-        points = points[:15]  # Limit to top 15
 
         return points if points else ["Resume from last modification"]
 
@@ -729,13 +994,20 @@ class SessionSaver:
             print("\nNo files created (dry run mode)")
             return
 
-        # Initialize logger
-        logger = SessionLogger()
+        # Initialize logger with project base directory
+        logger = SessionLogger(base_dir=str(self.base_dir))
+
+        # Collect project metadata
+        project_metadata = self._collect_project_metadata()
 
         # Start session
         logger.start_session(
             session_data['description'],
-            context={'auto_collected': True, 'tool': 'save-session.py'}
+            context={
+                'auto_collected': True,
+                'tool': 'save-session.py',
+                'project': project_metadata
+            }
         )
 
         # Add file changes
@@ -767,12 +1039,35 @@ class SessionSaver:
         for step in session_data['next_steps']:
             logger.add_next_step(step)
 
-        # Add dependencies (Phase 3)
-        if 'dependencies' in session_data:
-            logger.dependencies = session_data['dependencies']
-
         # End session
         checkpoint_file, log_file = logger.end_session()
+
+        # AUTO-COMMIT: Create git commit for session changes
+        commit_hash = None
+        if self.is_git_repo:
+            commit_hash = self._create_session_commit(
+                session_data,
+                checkpoint_file,
+                log_file
+            )
+
+            # If commit was successful, add git info to the checkpoint
+            if commit_hash:
+                # Re-read and update the checkpoint file with git info
+                try:
+                    with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                        checkpoint_data = json.load(f)
+
+                    checkpoint_data['git_commit_hash'] = commit_hash
+                    checkpoint_data['git_branch'] = self._get_git_branch()
+                    checkpoint_data['git_remote_url'] = self._get_git_remote_url()
+
+                    with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                        json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+
+                    print(f"  ✓ Checkpoint updated with commit info")
+                except Exception as e:
+                    print(f"  Warning: Could not update checkpoint with git info: {e}")
 
         # Update CLAUDE.md
         print("\nUpdating CLAUDE.md...")
@@ -795,8 +1090,24 @@ class SessionSaver:
         print("\n" + "="*70)
         print("SESSION SAVED SUCCESSFULLY")
         print("="*70)
-        print(f"\nCheckpoint: {checkpoint_file}")
-        print(f"Log: {log_file}")
+        print(f"\nCheckpoint: {os.path.basename(checkpoint_file)}")
+        print(f"Log:        {os.path.basename(log_file)}")
+
+        # Show git commit info if available
+        if commit_hash:
+            print(f"\nGit Commit: {commit_hash[:8]}")
+            print(f"Branch:     {self._get_git_branch()}")
+            remote_url = self._get_git_remote_url()
+            if 'github.com' in remote_url:
+                match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+                if match:
+                    remote_url = f"github.com/{match.group(1)}"
+            print(f"Remote:     {remote_url}")
+
+        print(f"\nFiles tracked: {len(session_data.get('changes', []))}")
+        print(f"Resume points: {len(session_data.get('resume_points', []))}")
+        print(f"Next steps:    {len(session_data.get('next_steps', []))}")
+
         print("\nTo resume in a new session:")
         print("  python scripts/resume-session.py")
         print("="*70)
@@ -828,27 +1139,80 @@ def main():
         default=240,
         help='Look for changes in the last N minutes (default: 240)'
     )
-    parser.add_argument(
-        '--skip-dependencies',
-        action='store_true',
-        help='Skip dependency analysis for faster checkpoints (Phase 4.2)'
-    )
 
     args = parser.parse_args()
 
     # Initialize saver
     saver = SessionSaver()
 
-    # Detect session boundary
-    session_start = saver.detect_session_boundary()
-    if session_start:
-        saver.session_start_time = session_start
-        minutes_ago = (datetime.now() - session_start).total_seconds() / 60
-        print(f"Detected session start: {session_start.strftime('%Y-%m-%d %H:%M:%S')} ({minutes_ago:.0f} minutes ago)")
-    else:
-        print(f"Using fallback: last {args.since_minutes} minutes")
+    # PROJECT SWITCH DETECTION
+    # Collect current project metadata
+    current_project = saver._collect_project_metadata()
 
-    print("Collecting session data...")
+    # Check for project switch
+    tracker = ProjectTracker()
+    has_switched, active_state = tracker.detect_switch(current_project)
+
+    if has_switched and active_state:
+        # Project switch detected - prompt user
+        choice = handle_project_switch(current_project, active_state)
+
+        if choice == 'checkpoint':
+            # User wants to checkpoint the previous project first
+            print("\n📦 Creating checkpoint for previous project...")
+
+            active_project = active_state['project']
+            prev_base_dir = Path(active_project['absolute_path'])
+
+            # Create new saver for previous project
+            prev_saver = SessionSaver(base_dir=str(prev_base_dir))
+
+            # Collect changes from previous project
+            print(f"Collecting changes from {active_project['name']}...")
+            prev_git_changes = prev_saver.collect_git_changes()
+            prev_fs_changes = prev_saver.collect_file_changes(since_minutes=args.since_minutes)
+            prev_all_changes = prev_saver.merge_changes(prev_git_changes, prev_fs_changes)
+
+            print(f"  Found {len(prev_all_changes)} file change(s) in previous project")
+
+            # Generate session data for previous project
+            prev_session_data = {
+                'description': f"[Auto-checkpoint before switch] {prev_saver.infer_session_description(prev_all_changes)}",
+                'changes': prev_all_changes,
+                'resume_points': prev_saver.suggest_resume_points(prev_all_changes),
+                'next_steps': prev_saver.suggest_next_steps(prev_all_changes),
+                'problems': [],
+                'decisions': []
+            }
+
+            # Save previous project session
+            prev_saver.save_session(prev_session_data, dry_run=False)
+
+            print(f"\n✓ Previous project checkpointed successfully!")
+            print(f"\nNow continuing with current project: {current_project['name']}\n")
+
+        elif choice == 'discard':
+            # User chose to discard previous project changes
+            print(f"\n⚠️  Discarding changes from {active_state['project']['name']}")
+            print(f"Continuing with current project: {current_project['name']}\n")
+
+        elif choice == 'cancel':
+            # User cancelled - exit without creating any checkpoint
+            print("\nOperation cancelled. No checkpoint created.")
+            sys.exit(0)
+
+    # Update active project state (will be finalized after checkpoint)
+    # For now, just note that we're tracking this project
+    tracker.set_active_project(
+        current_project,
+        has_uncommitted=saver.has_uncommitted_changes(saver.base_dir),
+        last_checkpoint=None  # Will be updated after save
+    )
+
+    # Display project context
+    print_project_context(saver.base_dir, saver.is_git_repo, auto_commit=True)
+
+    print("\nCollecting session data...")
 
     # Collect changes
     git_changes = saver.collect_git_changes()
@@ -860,43 +1224,14 @@ def main():
         print(f"    - {len(git_changes)} from git")
     print(f"    - {len(fs_changes)} from filesystem scan")
 
-    # Report skipped files
-    if saver.skipped_files['binary'] > 0 or saver.skipped_files['large'] > 0:
-        print(f"  Skipped:")
-        if saver.skipped_files['binary'] > 0:
-            print(f"    - {saver.skipped_files['binary']} binary file(s)")
-        if saver.skipped_files['large'] > 0:
-            print(f"    - {saver.skipped_files['large']} large file(s) (>{saver.MAX_FILE_SIZE:,} bytes)")
-
-    # Analyze dependencies (Phase 1.2: Cross-file dependency tracking)
-    dependencies = {}
-    if all_changes and not args.skip_dependencies:
-        changed_file_paths = [c['file_path'] for c in all_changes]
-        dependencies = saver.collect_dependencies(changed_file_paths)
-
-        # Enrich changes with dependency data
-        for change in all_changes:
-            filepath = change['file_path']
-            if filepath in dependencies:
-                change['dependencies'] = dependencies[filepath]
-    elif args.skip_dependencies:
-        print("  Skipping dependency analysis (--skip-dependencies flag)")
-
-    # Generate base resume points (from AST, TODOs, etc.)
-    base_resume_points = saver.suggest_resume_points(all_changes)
-
-    # Enhance resume points with dependency analysis (Phase 2.1)
-    final_resume_points = enhance_resume_points(base_resume_points, dependencies) if dependencies else base_resume_points
-
     # Generate auto-detected data
     auto_detected = {
         'description': args.description if args.description else saver.infer_session_description(all_changes),
         'changes': all_changes,
-        'resume_points': final_resume_points,
+        'resume_points': saver.suggest_resume_points(all_changes),
         'next_steps': saver.suggest_next_steps(all_changes),
         'problems': [],
-        'decisions': [],
-        'dependencies': dependencies  # Include dependency summary
+        'decisions': []
     }
 
     # Determine mode
@@ -907,6 +1242,14 @@ def main():
 
     # Save session
     saver.save_session(session_data, dry_run=args.dry_run)
+
+    # Update active project state after successful save (if not dry-run)
+    if not args.dry_run:
+        tracker.set_active_project(
+            current_project,
+            has_uncommitted=False,  # Just checkpointed, so no uncommitted changes
+            last_checkpoint=datetime.now().isoformat()
+        )
 
 
 if __name__ == "__main__":

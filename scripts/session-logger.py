@@ -11,6 +11,8 @@ This script provides functionality to:
 
 import json
 import os
+import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any
@@ -62,7 +64,12 @@ class SessionCheckpoint:
     resume_points: List[str]
     problems_encountered: List[str] = field(default_factory=list)
     next_steps: List[str] = field(default_factory=list)
-    dependencies: Dict[str, Dict] = field(default_factory=dict)  # Phase 3: Cross-file dependency tracking
+    # Git information (added for commit tracking)
+    git_commit_hash: Optional[str] = None
+    git_branch: Optional[str] = None
+    git_remote_url: Optional[str] = None
+    # Project identification (added for multi-project support)
+    project: Optional[Dict[str, Any]] = None
 
 
 class SessionLogger:
@@ -94,14 +101,79 @@ class SessionLogger:
         self.resume_points: List[str] = []
         self.problems_encountered: List[str] = []
         self.next_steps: List[str] = []
-        self.dependencies: Dict[str, Dict] = {}  # Phase 3: Cross-file dependency tracking
+
+    def _get_git_info(self) -> Optional[Dict]:
+        """Get git repository information"""
+        try:
+            # Check if it's a git repo
+            result = subprocess.run(
+                ['git', 'rev-parse', '--is-inside-work-tree'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                return None
+
+            # Get remote URL
+            remote_result = subprocess.run(
+                ['git', 'config', '--get', 'remote.origin.url'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            remote_url = remote_result.stdout.strip() if remote_result.returncode == 0 else "No remote"
+
+            # Get current branch
+            branch_result = subprocess.run(
+                ['git', 'branch', '--show-current'],
+                cwd=self.base_dir,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+
+            # Format remote URL for display (shorten GitHub URLs)
+            display_url = remote_url
+            if 'github.com' in remote_url:
+                # Extract repo name from URL
+                match = re.search(r'github\.com[:/](.+?)(?:\.git)?$', remote_url)
+                if match:
+                    display_url = f"github.com/{match.group(1)}"
+
+            return {
+                'remote_url': remote_url,
+                'display_url': display_url,
+                'branch': branch
+            }
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return None
 
     def start_session(self, description: str, context: Dict[str, Any] = None):
         """Start a new session with initial context"""
         self.context = context or {}
         self.context['description'] = description
-        print(f"Session started: {self.session_id}")
-        print(f"Description: {description}")
+
+        # Display project context
+        print("\n" + "="*70)
+        print("SESSION STARTED")
+        print("="*70)
+        print(f"  Session ID:  {self.session_id}")
+        print(f"  Description: {description}")
+
+        # Display git information if available
+        git_info = self._get_git_info()
+        if git_info:
+            print(f"  Git Repo:    {git_info['display_url']}")
+            print(f"  Branch:      {git_info['branch']}")
+            print(f"  Auto-commit: ENABLED")
+        else:
+            print("  Git: Not a git repository")
+        print("="*70)
 
     def add_task(self, description: str, status: str = "pending") -> Task:
         """Add a new task to the session"""
@@ -193,6 +265,9 @@ class SessionLogger:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         checkpoint_file = self.checkpoints_dir / f"checkpoint-{timestamp}.json"
 
+        # Extract project metadata from context (if provided)
+        project_metadata = self.context.get('project', None)
+
         checkpoint = SessionCheckpoint(
             session_id=self.session_id,
             timestamp=datetime.now().isoformat(),
@@ -206,33 +281,11 @@ class SessionLogger:
             resume_points=self.resume_points,
             problems_encountered=self.problems_encountered,
             next_steps=self.next_steps,
-            dependencies=self.dependencies  # Phase 3: Cross-file dependency tracking
+            project=project_metadata  # Add project identification
         )
 
         # Convert dataclasses to dict
         checkpoint_dict = asdict(checkpoint)
-
-        # Validate checkpoint before saving
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "checkpoint_schema",
-                os.path.join(os.path.dirname(__file__), "checkpoint_schema.py")
-            )
-            checkpoint_schema = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(checkpoint_schema)
-
-            is_valid, errors = checkpoint_schema.validate_checkpoint(checkpoint_dict)
-
-            if not is_valid:
-                print("Warning: Checkpoint validation failed:")
-                for error in errors[:5]:  # Show first 5 errors
-                    print(f"  - {error}")
-                print("  (Saving anyway, but checkpoint may be incomplete)")
-
-        except Exception as e:
-            print(f"Warning: Could not validate checkpoint: {e}")
-            # Continue anyway - validation is non-critical
 
         with open(checkpoint_file, 'w', encoding='utf-8') as f:
             json.dump(checkpoint_dict, f, indent=2, ensure_ascii=False)
