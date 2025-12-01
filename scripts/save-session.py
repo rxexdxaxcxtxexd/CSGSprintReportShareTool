@@ -324,15 +324,20 @@ def handle_project_switch(current_project: Dict[str, Any],
 class SessionSaver:
     """Intelligently collect and save session data"""
 
-    def __init__(self, base_dir: str = None):
-        """Initialize the session saver"""
+    def __init__(self, base_dir: str = None, force_home: bool = False):
+        """Initialize the session saver
+
+        Args:
+            base_dir: Project directory path
+            force_home: Allow tracking from home directory (for automated monitoring)
+        """
         if base_dir is None:
             base_dir = Path.cwd()
 
         self.base_dir = Path(base_dir)
 
         # HOME DIRECTORY GUARD: Refuse to track from home directory
-        if self.base_dir == Path.home():
+        if self.base_dir == Path.home() and not force_home:
             print("\n" + "="*70)
             print("ERROR: Cannot track session from home directory")
             print("="*70)
@@ -346,8 +351,8 @@ class SessionSaver:
         self.session_start_time = None
         self.is_git_repo = self._check_git_repo()
 
-        # CRITICAL: Hard block if home directory is a git repository
-        if self.base_dir == Path.home() and self.is_git_repo:
+        # CRITICAL: Hard block if home directory is a git repository (unless forced)
+        if self.base_dir == Path.home() and self.is_git_repo and not force_home:
             print("\n" + "="*70)
             print("CRITICAL ERROR: Home directory is a git repository")
             print("="*70)
@@ -990,11 +995,24 @@ def main():
         default=240,
         help='Look for changes in the last N minutes (default: 240)'
     )
+    parser.add_argument(
+        '--project-path',
+        type=str,
+        help='Project directory path (bypasses auto-detection)'
+    )
+    parser.add_argument(
+        '--force-home',
+        action='store_true',
+        help='Allow session tracking from home directory (for automated monitoring)'
+    )
 
     args = parser.parse_args()
 
-    # Initialize saver
-    saver = SessionSaver()
+    # Initialize saver with project path if provided
+    if args.project_path:
+        saver = SessionSaver(base_dir=args.project_path, force_home=args.force_home)
+    else:
+        saver = SessionSaver(force_home=args.force_home)
 
     # PROJECT SWITCH DETECTION
     # Collect current project metadata

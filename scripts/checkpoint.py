@@ -97,6 +97,18 @@ Examples:
         help='Look for changes in last N minutes (default: 240)'
     )
 
+    parser.add_argument(
+        '--project-path',
+        type=str,
+        help='Project directory path (bypasses auto-detection)'
+    )
+
+    parser.add_argument(
+        '--force-home',
+        action='store_true',
+        help='Allow checkpointing from home directory (for automated monitoring)'
+    )
+
     # Advanced options
     parser.add_argument(
         '--skip-update',
@@ -146,6 +158,12 @@ Examples:
 
     if args.dry_run:
         save_cmd.append('--dry-run')
+
+    if args.project_path:
+        save_cmd.extend(['--project-path', args.project_path])
+
+    if args.force_home:
+        save_cmd.append('--force-home')
 
     save_cmd.extend(['--since-minutes', str(args.since_minutes)])
 
