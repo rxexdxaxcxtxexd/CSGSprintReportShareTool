@@ -209,6 +209,12 @@ class ContextMonitor:
         status = self.get_status_level(usage_percent / 100)
         recommendation = self.get_recommendation(status, usage_percent)
 
+        # Check if memory extraction should be suggested
+        memory_suggestion = ""
+        if status in ['warning', 'critical']:
+            # Suggest memory extraction for high token usage
+            memory_suggestion = "\n  Consider running checkpoint to preserve memory context"
+
         # Get time range
         first_entry = entries[0]
         last_entry = entries[-1]
@@ -245,6 +251,8 @@ class ContextMonitor:
 
         # Status and recommendation
         print(recommendation)
+        if memory_suggestion:
+            print(memory_suggestion)
         print()
 
         print("=" * 70)

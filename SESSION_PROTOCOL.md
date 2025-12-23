@@ -288,6 +288,12 @@ python scripts/resume-session.py summary
 # Check context window usage
 python scripts/context-monitor.py
 
+# Check memory trigger status
+python scripts/memory_trigger.py --stats
+
+# Test memory triggers (no MCP calls)
+python scripts/memory_trigger.py --prompt "test query" --test
+
 # Start background monitoring (optional)
 python scripts/auto-checkpoint-daemon.py &
 
@@ -533,6 +539,71 @@ cat CLAUDE.md  # Should show updated session state
 - **Crash protection** - Task Scheduler catches edge cases
 - **Context preservation** - Automatic session continuity
 - **95%+ reliability** - Hooks + Task Scheduler cover nearly all scenarios
+
+---
+
+## Memory Trigger System
+
+The Context-Aware Memory Trigger System automatically queries the MCP memory graph when relevant context is needed, enhancing session continuity.
+
+### How It Works
+
+The system uses 4 intelligent detectors that trigger on specific conditions:
+
+1. **Project Switch Detector** (Priority 1)
+   - Triggers when: Switching git repositories or branches
+   - Loads: Project decisions, architecture patterns, design rationale
+   - Token cost: ~200 tokens
+
+2. **Keyword Detector** (Priority 2)
+   - Triggers when: Phrases like "remember", "why did we", "decided"
+   - Loads: Relevant past decisions and context
+   - Token cost: ~150 tokens
+
+3. **Entity Mention Detector** (Priority 3)
+   - Triggers when: Known entities (files, classes, modules) are mentioned
+   - Loads: Entity details and relationships
+   - Token cost: ~100 tokens
+
+4. **Token Threshold Detector** (Priority 4)
+   - Triggers when: Context usage reaches 100K or 150K tokens
+   - Loads: Pending decisions, incomplete tasks
+   - Token cost: ~175 tokens
+
+### Integration Points
+
+**Checkpoint Workflow**: Memory extraction runs automatically during `checkpoint.py --quick` (Step 2.5)
+
+**Context Monitor**: Memory suggestions appear when token usage reaches warning/critical levels
+
+**Token Budget**: Maximum 5,000 tokens per session (~2.5% of context window)
+
+### Commands
+
+```bash
+# Check trigger statistics
+python scripts/memory_trigger.py --stats
+
+# Test triggers (no MCP calls)
+python scripts/memory_trigger.py --prompt "test" --test
+
+# Manual trigger
+python scripts/memory_trigger.py --prompt "remember our decision"
+```
+
+### Configuration
+
+**File**: `.claude/memory-trigger-config.json`
+
+Enable/disable detectors, adjust priorities, configure cache settings.
+
+### Troubleshooting
+
+**No detectors registered**: Check configuration file exists at `.claude/memory-trigger-config.json`
+
+**MCP unavailable**: System degrades gracefully - operations continue without memory queries
+
+**High token usage**: Adjust `max_tokens_per_session` in configuration (default: 5000)
 
 ---
 

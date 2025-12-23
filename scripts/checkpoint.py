@@ -200,6 +200,29 @@ Examples:
 
         if success:
             print("[OK] CLAUDE.md synchronized with checkpoint")
+
+        # Step 2.5: Extract memory insights (optional)
+        if success and not args.skip_update:  # Only if CLAUDE.md update succeeded
+            print()
+            print("[2.5/3] Extracting memory insights...")
+
+            memory_cmd = [
+                sys.executable,
+                str(scripts_dir / 'memory_trigger.py'),
+                '--prompt', 'session checkpoint - extract relevant context',
+                '--test'  # Use test mode initially to avoid MCP dependency
+            ]
+
+            memory_success = run_command(
+                memory_cmd,
+                "Extract memory context",
+                can_fail=True  # Memory extraction is optional
+            )
+
+            if memory_success:
+                print("[OK] Memory insights extracted")
+            else:
+                print("[INFO] Memory extraction skipped (MCP unavailable)")
     else:
         if args.verbose:
             print("\n[2/3] Skipping CLAUDE.md update (--skip-update)")
