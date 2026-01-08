@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""
+CSG Sprint Reporter - Standalone CLI Tool
+Generate sprint reports from Jira + Fathom without AI
+
+Usage:
+  python csg-sprint-reporter.py                    # Interactive mode
+  python csg-sprint-reporter.py --config           # Configure credentials
+  python csg-sprint-reporter.py --quick --sprint 13 # Quick mode
+
+Requirements:
+  pip install -r requirements-sprint-reporter.txt
+"""
+
+import argparse
+import sys
+import logging
+from pathlib import Path
+from datetime import datetime
+
+# Add script directory to path to import csg_sprint_lib
+sys.path.insert(0, str(Path(__file__).parent))
+
+from csg_sprint_lib import (
+    ConfigManager,
+    JiraClient,
+    FathomClient,
+    SprintReportGenerator,
+    InteractiveMenu
+)
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description="CSG Sprint Reporter - Generate sprint reports from Jira + Fathom",
+        epilog="For first-time setup, run: python csg-sprint-reporter.py --config"
+    )
+    parser.add_argument("--config", action="store_true", help="Configure credentials")
+    parser.add_argument("--quick", action="store_true", help="Skip interactive menu, use last config")
+    parser.add_argument("--sprint", type=int, help="Sprint number (required for --quick mode)")
+
+    args = parser.parse_args()
+
+    # Setup debug logging to Downloads folder
+    log_dir = Path.home() / "Downloads"
+    log_file = log_dir / f"csg-sprint-reporter-debug-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Debug log created: {log_file}")
+    logger.info(f"Command: {' '.join(sys.argv)}")
+
+    # Initialize config manager
+    config_mgr = ConfigManager()
+
+    # Track if we just completed setup
+    just_completed_setup = False
+
+    # Mode 1: Reconfigure credentials
+    if args.config:
+        config_mgr.first_run_setup()
+        just_completed_setup = True
+        # Don't return - fall through to interactive mode
+
+    # Mode 2: Check if credentials exist
+    if not config_mgr.credentials_exist():
+        print("=" * 60)
+        print("FIRST-TIME SETUP REQUIRED")
+        print("=" * 60)
+        print()
+        print("No credentials found. Running first-time setup...")
+        print()
+        config_mgr.first_run_setup()
+
+        if not config_mgr.credentials_exist():
+            print()
+            print("[ERROR] Setup cancelled or failed")
+            return 1
+
+        just_completed_setup = True
+
+    # If we just completed setup, force interactive mode
+    if just_completed_setup:
+        print()
+        print("=" * 60)
+        print("Setup complete! Starting interactive mode...")
+        print("=" * 60)
+        print()
+        # Force interactive mode even if --quick was specified
+        args.quick = False
+
+    # Check for API token expiration
+    expiration_msg = config_mgr.check_token_expiration()
+    if expiration_msg:
+        print(expiration_msg)
+
+        # Block if expired
+        if "EXPIRED" in expiration_msg:
+            return 1
+
+        # Just warn if expiring soon
+        print()
+
+    # Load credentials
+    try:
+        creds = config_mgr.load_credentials()
+    except Exception as e:
+        print(f"[ERROR] Failed to load credentials: {e}")
+        print("[ERROR] Run --config to reconfigure")
+        return 1
+
+    # Initialize API clients
+    print("Initializing API clients...")
+    jira_client = JiraClient(creds['jira_site'], creds['jira_email'], creds['jira_token'])
+
+    fathom_client = None
+    if creds.get('fathom_key'):
+        fathom_client = FathomClient(creds['fathom_key'])
+
+    # Test Jira connection
+    print("Testing Jira connection...")
+    if not jira_client.test_connection():
+        print("[ERROR] Jira authentication failed")
+        print("[ERROR] Check your credentials with: python csg-sprint-reporter.py --config")
+        return 1
+    print("  Jira connection OK")
+
+    # Test Fathom connection if available
+    if fathom_client:
+        print("Testing Fathom connection...")
+        if not fathom_client.test_connection():
+            print("[WARNING] Fathom authentication failed")
+            print("[WARNING] Meeting insights will not be available")
+            fathom_client = None
+        else:
+            print("  Fathom connection OK")
+
+    # Mode 3: Quick mode (use last config)
+    if args.quick:
+        if not args.sprint:
+            print("[ERROR] --quick mode requires --sprint N")
+            return 1
+
+        # Use last meeting filter or prompt if not set
+        last_meeting_filter = creds.get('last_meeting_filter')
+        if not last_meeting_filter:
+            print()
+            print("Quick mode: Meeting filter not configured.")
+            print("Enter keyword for Fathom meeting search (e.g., 'iBOPS', 'Engineering', 'Sprint')")
+            last_meeting_filter = input("Meeting keyword: ").strip()
+            if not last_meeting_filter:
+                print("[ERROR] Meeting filter required for quick mode")
+                return 1
+            # Save for next time
+            config_mgr.save_last_config(creds.get('last_board', 38), args.sprint, last_meeting_filter)
+
+        config = {
+            'board_id': creds.get('last_board', 38),
+            'sprint_number': args.sprint,
+            'meeting_filter': last_meeting_filter,
+            'custom_dates': None,
+            'sections': {
+                'sprint_summary': True,
+                'team_breakdown': True,
+                'issue_status': True,
+                'epic_progress': True,
+                'blockers': True,
+                'meeting_insights': True
+            }
+        }
+        print(f"Quick mode: Board {config['board_id']}, Sprint {config['sprint_number']}, Meetings: '{last_meeting_filter}'")
+
+    # Mode 4: Interactive mode (default)
+    else:
+        menu = InteractiveMenu(jira_client, config_mgr)
+        config = menu.run()
+
+        if not config:
+            print()
+            print("[CANCELLED] Report generation cancelled by user")
+            return 0
+
+    # Generate report
+    print()
+    print("=" * 60)
+    print(f"Generating Sprint {config['sprint_number']} Report")
+    print("=" * 60)
+    print()
+
+    generator = SprintReportGenerator(jira_client, fathom_client, config)
+
+    try:
+        # Fetch data
+        generator.fetch_data()
+
+        # Calculate metrics
+        print("Calculating metrics...")
+        metrics = generator.calculate_metrics()
+
+        # Generate markdown
+        print("Generating report...")
+        markdown = generator.generate_markdown()
+
+        # Save report
+        output_dir = Path.home() / "Downloads"
+        output_path = generator.save_report(output_dir)
+
+        # Save last config for quick mode
+        config_mgr.save_last_config(config['board_id'], config['sprint_number'], config['meeting_filter'])
+
+        # Success summary
+        print()
+        print("=" * 60)
+        print("REPORT GENERATED SUCCESSFULLY")
+        print("=" * 60)
+        print(f"Output:          {output_path}")
+        print(f"Total Issues:    {metrics.total_issues}")
+        print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
+        print(f"In Progress:     {metrics.in_progress_count}")
+        print(f"Meetings:        {len(generator.meetings)}")
+        print(f"Debug Log:       {log_file}")
+        print("=" * 60)
+        print()
+
+        return 0
+
+    except KeyboardInterrupt:
+        print()
+        print("[CANCELLED] Report generation interrupted by user")
+        print(f"[DEBUG] See log file: {log_file}")
+        return 130
+
+    except Exception as e:
+        print()
+        print("=" * 60)
+        print("ERROR GENERATING REPORT")
+        print("=" * 60)
+        print(f"Error: {e}")
+        print()
+        print("Troubleshooting:")
+        print("  - Check sprint number exists on the board")
+        print("  - Verify API credentials with --config")
+        print("  - Check network connection")
+        print(f"  - Check debug log: {log_file}")
+        print("=" * 60)
+        logger.exception("Report generation failed")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

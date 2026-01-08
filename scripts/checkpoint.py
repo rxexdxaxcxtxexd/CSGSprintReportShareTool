@@ -15,6 +15,44 @@ import subprocess
 import argparse
 from pathlib import Path
 
+# Import the UI design system
+try:
+    import claude_terminal_ui as ui
+    UI_AVAILABLE = True
+except ImportError:
+    UI_AVAILABLE = False
+    # Fallback functions if UI not available
+    class ui:
+        @staticmethod
+        def header(title, **kwargs):
+            print("=" * 70)
+            print(" " * ((70 - len(title)) // 2) + title)
+            print("=" * 70)
+
+        @staticmethod
+        def divider(**kwargs):
+            print("-" * 70)
+
+        @staticmethod
+        def step_indicator(current, total, message=""):
+            return f"[{current}/{total}] {message}"
+
+        @staticmethod
+        def print_success(message, **kwargs):
+            print(f"[OK] {message}")
+
+        @staticmethod
+        def print_error(message, **kwargs):
+            print(f"[ERROR] {message}")
+
+        @staticmethod
+        def print_warning(message, **kwargs):
+            print(f"[WARNING] {message}")
+
+        @staticmethod
+        def print_info(message, **kwargs):
+            print(f"[INFO] {message}")
+
 
 def run_command(command: list, description: str, can_fail: bool = False) -> bool:
     """Run a command and display results
@@ -35,11 +73,11 @@ def run_command(command: list, description: str, can_fail: bool = False) -> bool
 
     if result.returncode != 0:
         if can_fail:
-            print(f"[WARNING] {description} failed:")
+            ui.print_warning(f"{description} failed:")
             print(f"  {result.stderr}")
             return False
         else:
-            print(f"[ERROR] {description} failed:")
+            ui.print_error(f"{description} failed:")
             print(f"  {result.stderr}")
             sys.exit(1)
 
@@ -135,17 +173,15 @@ Examples:
 
     # Print header
     print()
-    print("="*70)
-    print(" "*20 + "UNIFIED CHECKPOINT")
-    print("="*70)
+    print(ui.header("UNIFIED CHECKPOINT"))
 
     if args.dry_run:
-        print("[DRY RUN MODE - No files will be created]")
+        ui.print_info("DRY RUN MODE - No files will be created")
 
     print()
 
     # Step 1: Save session
-    print("[1/3] Collecting and saving session data...")
+    print(ui.step_indicator(1, 3, "Collecting and saving session data..."))
     print()
 
     save_cmd = [sys.executable, str(scripts_dir / 'save-session.py')]
@@ -176,15 +212,15 @@ Examples:
     # If dry-run, stop here
     if args.dry_run:
         print()
-        print("="*70)
-        print("DRY RUN COMPLETE - No files were created")
-        print("="*70)
+        print(ui.divider())
+        ui.print_info("DRY RUN COMPLETE - No files were created")
+        print(ui.divider())
         return 0
 
     # Step 2: Update CLAUDE.md (unless skipped)
     if not args.skip_update:
         print()
-        print("[2/3] Updating CLAUDE.md...")
+        print(ui.step_indicator(2, 3, "Updating CLAUDE.md..."))
 
         update_cmd = [
             sys.executable,
@@ -199,12 +235,12 @@ Examples:
         )
 
         if success:
-            print("[OK] CLAUDE.md synchronized with checkpoint")
+            ui.print_success("CLAUDE.md synchronized with checkpoint")
 
         # Step 2.5: Extract memory insights (optional)
         if success and not args.skip_update:  # Only if CLAUDE.md update succeeded
             print()
-            print("[2.5/3] Extracting memory insights...")
+            print(ui.step_indicator(2.5, 3, "Extracting memory insights..."))
 
             memory_cmd = [
                 sys.executable,
@@ -220,18 +256,19 @@ Examples:
             )
 
             if memory_success:
-                print("[OK] Memory insights extracted")
+                ui.print_success("Memory insights extracted")
             else:
-                print("[INFO] Memory extraction skipped (MCP unavailable)")
+                ui.print_info("Memory extraction skipped (MCP unavailable)")
     else:
         if args.verbose:
-            print("\n[2/3] Skipping CLAUDE.md update (--skip-update)")
+            print()
+            print(ui.step_indicator(2, 3, "Skipping CLAUDE.md update (--skip-update)"))
 
     # Step 3: Display summary (unless skipped)
     if not args.skip_display:
         print()
-        print("[3/3] Session summary:")
-        print("-" * 70)
+        print(ui.step_indicator(3, 3, "Session summary:"))
+        print(ui.divider())
 
         summary_cmd = [
             sys.executable,
@@ -246,21 +283,20 @@ Examples:
         )
     else:
         if args.verbose:
-            print("\n[3/3] Skipping summary display (--skip-display)")
+            print()
+            print(ui.step_indicator(3, 3, "Skipping summary display (--skip-display)"))
 
     # Final message
     print()
-    print("="*70)
-    print(" "*23 + "CHECKPOINT COMPLETE")
-    print("="*70)
+    print(ui.header("CHECKPOINT COMPLETE"))
     print()
-    print("To resume in a new session:")
+    ui.print_info("To resume in a new session:")
     print("  python scripts/resume-session.py")
     print()
-    print("To check context usage:")
+    ui.print_info("To check context usage:")
     print("  python scripts/context-monitor.py")
     print()
-    print("="*70)
+    print(ui.divider())
 
     return 0
 
