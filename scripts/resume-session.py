@@ -15,7 +15,7 @@ import sys
 import importlib.util
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel

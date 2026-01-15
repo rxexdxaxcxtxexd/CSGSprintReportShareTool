@@ -63,7 +63,8 @@ class MemoryTriggerEngine:
     def _setup_logging(self):
         """Configure rotating file logger for debugging and monitoring"""
         log_config = self.config.get('logging', {})
-        log_level = getattr(logging, log_config.get('level', 'INFO'))
+        log_level_name = log_config.get('level', 'INFO')
+        log_level = getattr(logging, log_level_name, logging.INFO)
         log_file = Path.home() / log_config.get('file', '.claude/memory-trigger.log')
         max_bytes = log_config.get('max_size_mb', 10) * 1024 * 1024
         backup_count = log_config.get('backup_count', 3)
@@ -408,7 +409,11 @@ class MemoryTriggerEngine:
             True if within budget, False otherwise
         """
         max_tokens = self.config['budget']['max_tokens_per_session']
+        max_tokens_per_trigger = self.config['budget'].get('max_tokens_per_trigger')
         current_usage = self.state.get('tokens_used', 0)
+
+        if max_tokens_per_trigger is not None and additional_tokens > max_tokens_per_trigger:
+            return False
 
         return (current_usage + additional_tokens) <= max_tokens
 

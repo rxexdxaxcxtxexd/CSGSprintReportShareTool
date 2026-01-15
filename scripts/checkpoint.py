@@ -25,9 +25,9 @@ except ImportError:
     class ui:
         @staticmethod
         def header(title, **kwargs):
-            print("=" * 70)
-            print(" " * ((70 - len(title)) // 2) + title)
-            print("=" * 70)
+            line = "=" * 70
+            centered = " " * ((70 - len(title)) // 2) + title
+            return "\n".join([line, centered, line])
 
         @staticmethod
         def divider(**kwargs):
@@ -54,7 +54,7 @@ except ImportError:
             print(f"[INFO] {message}")
 
 
-def run_command(command: list, description: str, can_fail: bool = False) -> bool:
+def run_command(command: list, description: str, can_fail: bool = False, verbose: bool = False) -> bool:
     """Run a command and display results
 
     Args:
@@ -65,6 +65,9 @@ def run_command(command: list, description: str, can_fail: bool = False) -> bool
     Returns:
         True if successful, False if failed
     """
+    if verbose:
+        ui.print_info(f"Running: {' '.join(command)}")
+
     result = subprocess.run(
         command,
         capture_output=True,
@@ -206,7 +209,8 @@ Examples:
     success = run_command(
         save_cmd,
         "Save session",
-        can_fail=False
+        can_fail=False,
+        verbose=args.verbose
     )
 
     # If dry-run, stop here
@@ -231,7 +235,8 @@ Examples:
         success = run_command(
             update_cmd,
             "Update CLAUDE.md",
-            can_fail=True  # Can continue if this fails
+            can_fail=True,  # Can continue if this fails
+            verbose=args.verbose
         )
 
         if success:
@@ -252,7 +257,8 @@ Examples:
             memory_success = run_command(
                 memory_cmd,
                 "Extract memory context",
-                can_fail=True  # Memory extraction is optional
+                can_fail=True,  # Memory extraction is optional
+                verbose=args.verbose
             )
 
             if memory_success:
@@ -279,7 +285,8 @@ Examples:
         run_command(
             summary_cmd,
             "Display summary",
-            can_fail=True  # Can continue if this fails
+            can_fail=True,  # Can continue if this fails
+            verbose=args.verbose
         )
     else:
         if args.verbose:
