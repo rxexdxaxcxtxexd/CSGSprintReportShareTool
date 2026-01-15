@@ -29,6 +29,15 @@ session_index = importlib.util.module_from_spec(spec_index)
 spec_index.loader.exec_module(session_index)
 SessionIndex = session_index.SessionIndex
 
+# Import task context modules
+try:
+    from task_stack import TaskStack
+    from session_state_manager import SessionState
+    from mode_detector import ModeDetector
+    TASK_CONTEXT_AVAILABLE = True
+except ImportError:
+    TASK_CONTEXT_AVAILABLE = False
+
 
 class SessionResumer:
     """Load and display previous session information"""
@@ -210,6 +219,26 @@ class SessionResumer:
 
         return None
 
+    def load_task_context(self):
+        """Load task stack and session state"""
+        if not TASK_CONTEXT_AVAILABLE:
+            return None
+
+        try:
+            task_stack = TaskStack()
+            task_stack.load()
+
+            session_state = SessionState()
+            session_state.load()
+
+            return {
+                'task_stack': task_stack,
+                'session_state': session_state,
+                'current_task': task_stack.current()
+            }
+        except Exception as e:
+            return None
+
     def list_checkpoints(self) -> List[dict]:
         """List all available checkpoints"""
         if not self.checkpoints_dir.exists():
@@ -355,6 +384,42 @@ class SessionResumer:
                 border_style="yellow"
             ))
 
+    def display_task_context(self, task_context):
+        """Display task stack and current session state"""
+        if not task_context:
+            return
+
+        # Use simple print for Windows compatibility
+        print("\n" + "=" * 70)
+        print(" " * 25 + "TASK CONTEXT")
+        print("=" * 70)
+
+        task_stack = task_context['task_stack']
+        session_state = task_context['session_state']
+
+        # Show current task
+        current = task_stack.current()
+        if current:
+            print(f"\nCurrent Task: {current}")
+
+        # Show session mode
+        if session_state.mode:
+            print(f"Session Mode: {session_state.mode}")
+
+        # Show pending work
+        if session_state.pending_work:
+            print(f"\nPending Work:")
+            for item in session_state.pending_work[:5]:  # Show first 5
+                print(f"  - {item}")
+
+        # Show recent decisions
+        if session_state.decisions:
+            print(f"\nRecent Decisions:")
+            for decision in session_state.decisions[-3:]:  # Last 3
+                print(f"  - {decision.decision}")
+
+        print("=" * 70)
+
     def display_checkpoint_simple(self, checkpoint: dict):
         """Display checkpoint information using simple text formatting"""
         print("\n" + "="*60)
@@ -488,6 +553,27 @@ class SessionResumer:
             self.display_checkpoint_rich(checkpoint)
         else:
             self.display_checkpoint_simple(checkpoint)
+
+    def resume(self, session_id: Optional[str] = None):
+        """Main resume flow with task context integration"""
+        # Load checkpoint
+        if session_id:
+            checkpoint = self.load_checkpoint_by_id(session_id)
+        else:
+            checkpoint = self.load_latest_checkpoint()
+
+        if not checkpoint:
+            print("No checkpoints found.")
+            print("\nRun checkpoint.py to create a session checkpoint.")
+            return
+
+        # Display checkpoint information
+        self.display_checkpoint(checkpoint)
+
+        # Load and display task context
+        task_context = self.load_task_context()
+        if task_context:
+            self.display_task_context(task_context)
 
     def display_checkpoint_list(self, checkpoints: List[dict]):
         """Display list of available checkpoints"""
@@ -625,21 +711,11 @@ def main():
             return
         else:
             # Try to load by session ID
-            checkpoint = resumer.load_checkpoint_by_id(command)
-            if checkpoint:
-                resumer.display_checkpoint(checkpoint)
-            else:
-                print(f"Checkpoint not found: {command}")
+            resumer.resume(session_id=command)
             return
 
-    # Default: display latest checkpoint
-    checkpoint = resumer.load_latest_checkpoint()
-
-    if checkpoint:
-        resumer.display_checkpoint(checkpoint)
-    else:
-        print("No checkpoints found.")
-        print("\nRun session-logger.py to create a session checkpoint.")
+    # Default: use new resume flow with task context
+    resumer.resume()
 
 
 if __name__ == "__main__":
