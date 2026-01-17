@@ -28,6 +28,13 @@ class RateLimitError(APIError):
     pass
 
 
+class CreditExhaustedError(APIError):
+    """Claude API credits exhausted"""
+    def __init__(self, message: str, admin_contact: Optional[str] = None):
+        super().__init__(message)
+        self.admin_contact = admin_contact
+
+
 def fetch_with_retry(api_call, max_retries=3):
     """Retry API call with exponential backoff on network errors"""
     for attempt in range(max_retries):
@@ -196,7 +203,7 @@ class JiraClient:
             max_results = 100
 
             while True:
-                url = f"{self.api_v3_url}/search"
+                url = f"{self.api_v3_url}/search/jql"
                 params = {
                     "jql": jql,
                     "startAt": start_at,
@@ -324,3 +331,200 @@ class FathomClient:
         """
         logger.warning(f"get_meeting_details() called but not needed - details already in list response")
         return {}
+
+
+class ClaudeClient:
+    """Client for Claude API - AI-powered report synthesis"""
+
+    def __init__(self, api_key: str, key_metadata: Optional[Dict] = None):
+        self.api_key = api_key
+        self.key_metadata = key_metadata or {}
+        try:
+            from anthropic import Anthropic, RateLimitError as AnthropicRateLimitError, AuthenticationError as AnthropicAuthenticationError
+            self.client = Anthropic(api_key=api_key)
+            self.available = True
+            self.AnthropicRateLimitError = AnthropicRateLimitError
+            self.AnthropicAuthenticationError = AnthropicAuthenticationError
+        except ImportError:
+            logger.error("anthropic package not installed. Install with: pip install anthropic")
+            self.available = False
+        except Exception as e:
+            logger.error(f"Failed to initialize Claude client: {e}")
+            self.available = False
+
+    def _is_credit_exhaustion_error(self, error) -> bool:
+        """
+        Check if RateLimitError is due to credit exhaustion.
+        Anthropic returns HTTP 429 with message containing billing keywords.
+        """
+        error_msg = str(error).lower()
+        credit_keywords = [
+            "credit", "billing", "balance", "quota",
+            "insufficient funds", "payment"
+        ]
+        return any(keyword in error_msg for keyword in credit_keywords)
+
+    def test_connection(self) -> bool:
+        """Test Claude API key validity"""
+        if not self.available:
+            return False
+
+        try:
+            # Make a minimal API call to test authentication
+            response = self.client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=10,
+                messages=[{"role": "user", "content": "test"}]
+            )
+            return True
+        except Exception as e:
+            # Check for specific error types if available
+            if self.available and hasattr(self, 'AnthropicAuthenticationError') and isinstance(e, self.AnthropicAuthenticationError):
+                logger.error(f"Claude API authentication failed: {e}")
+                return False
+            elif self.available and hasattr(self, 'AnthropicRateLimitError') and isinstance(e, self.AnthropicRateLimitError):
+                if self._is_credit_exhaustion_error(e):
+                    logger.error(f"Claude API credits exhausted: {e}")
+                    return False
+                else:
+                    logger.warning(f"Claude API rate limited (retry later): {e}")
+                    return False
+            else:
+                logger.error(f"Claude API test failed: {e}")
+                return False
+
+    def synthesize_meeting_insights(self, meetings: List[Dict], sprint_context: str) -> Dict[str, str]:
+        """
+        Use Claude to synthesize meeting insights into narrative sections
+
+        Returns dict with:
+        - executive_summary: AI-generated sprint summary
+        - key_decisions: Extracted decisions with context
+        - meeting_themes: Grouped and synthesized meeting insights
+        """
+        if not self.available:
+            logger.warning("Claude client not available, skipping AI synthesis")
+            return {
+                "executive_summary": "",
+                "key_decisions": "",
+                "meeting_themes": ""
+            }
+
+        try:
+            # Prepare meeting data for Claude
+            meeting_summaries = []
+            for meeting in meetings:
+                meeting_summaries.append(f"""
+Meeting: {meeting.get('title', 'Untitled')}
+Date: {meeting.get('date', 'Unknown')}
+Summary: {meeting.get('summary', 'No summary')}
+Action Items: {', '.join(meeting.get('action_items', [])) if meeting.get('action_items') else 'None'}
+---
+""")
+
+            prompt = f"""You are analyzing sprint meetings to create a professional sprint report.
+
+SPRINT CONTEXT:
+{sprint_context}
+
+MEETINGS ({len(meetings)} total):
+{''.join(meeting_summaries)}
+
+Please provide:
+
+1. EXECUTIVE SUMMARY (2-3 sentences):
+Synthesize the overall sprint progress and health based on meeting discussions.
+
+2. KEY DECISIONS (bullet list):
+Extract major decisions made during the sprint with context about when/why.
+
+3. MEETING THEMES:
+Group meetings by theme (Planning, Stand-Ups, Reviews, Demos) and provide a 1-2 sentence synthesis for each theme.
+
+Format your response as:
+## EXECUTIVE SUMMARY
+[your summary]
+
+## KEY DECISIONS
+- [decision 1]
+- [decision 2]
+
+## MEETING THEMES
+### [Theme 1]
+[synthesis]
+
+### [Theme 2]
+[synthesis]
+"""
+
+            logger.info("Calling Claude API for meeting synthesis...")
+            response = self.client.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            # Parse response
+            content = response.content[0].text
+
+            # Extract sections
+            result = {
+                "executive_summary": self._extract_section(content, "EXECUTIVE SUMMARY", "KEY DECISIONS"),
+                "key_decisions": self._extract_section(content, "KEY DECISIONS", "MEETING THEMES"),
+                "meeting_themes": self._extract_section(content, "MEETING THEMES", None)
+            }
+
+            logger.info(f"AI synthesis complete. Tokens used: {response.usage.input_tokens + response.usage.output_tokens}")
+            return result
+
+        except Exception as e:
+            # Check for specific error types if available
+            if self.available and hasattr(self, 'AnthropicRateLimitError') and isinstance(e, self.AnthropicRateLimitError):
+                if self._is_credit_exhaustion_error(e):
+                    logger.error(f"Claude API credits exhausted: {e}")
+                    admin_contact = self.key_metadata.get("admin_contact")
+                    raise CreditExhaustedError(
+                        "Shared Claude API key has run out of credits",
+                        admin_contact=admin_contact
+                    )
+                else:
+                    logger.error(f"Claude API rate limited: {e}")
+                    return {
+                        "executive_summary": "",
+                        "key_decisions": "",
+                        "meeting_themes": ""
+                    }
+            elif self.available and hasattr(self, 'AnthropicAuthenticationError') and isinstance(e, self.AnthropicAuthenticationError):
+                logger.error(f"Claude API authentication failed: {e}")
+                return {
+                    "executive_summary": "",
+                    "key_decisions": "",
+                    "meeting_themes": ""
+                }
+            else:
+                logger.error(f"Claude API synthesis failed: {e}")
+                return {
+                    "executive_summary": "",
+                    "key_decisions": "",
+                    "meeting_themes": ""
+                }
+
+    def _extract_section(self, text: str, start_marker: str, end_marker: Optional[str]) -> str:
+        """Extract content between two section markers"""
+        try:
+            start_idx = text.find(f"## {start_marker}")
+            if start_idx == -1:
+                return ""
+
+            start_idx = text.find("\n", start_idx) + 1
+
+            if end_marker:
+                end_idx = text.find(f"## {end_marker}", start_idx)
+                if end_idx == -1:
+                    end_idx = len(text)
+            else:
+                end_idx = len(text)
+
+            return text[start_idx:end_idx].strip()
+        except Exception:
+            return ""

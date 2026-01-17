@@ -25,9 +25,11 @@ from csg_sprint_lib import (
     ConfigManager,
     JiraClient,
     FathomClient,
+    ClaudeClient,
     SprintReportGenerator,
     InteractiveMenu
 )
+from csg_sprint_lib.api_client import CreditExhaustedError
 
 
 def main():
@@ -37,8 +39,10 @@ def main():
         epilog="For first-time setup, run: python csg-sprint-reporter.py --config"
     )
     parser.add_argument("--config", action="store_true", help="Configure credentials")
+    parser.add_argument("--add-claude-key", action="store_true", help="Add Claude API key to existing configuration")
     parser.add_argument("--quick", action="store_true", help="Skip interactive menu, use last config")
     parser.add_argument("--sprint", type=int, help="Sprint number (required for --quick mode)")
+    parser.add_argument("--ai", action="store_true", help="Use AI-powered narrative synthesis (requires Claude API key)")
 
     args = parser.parse_args()
 
@@ -69,6 +73,25 @@ def main():
         config_mgr.first_run_setup()
         just_completed_setup = True
         # Don't return - fall through to interactive mode
+
+    # Mode 1b: Add Claude API key to existing config
+    if args.add_claude_key:
+        print("=" * 60)
+        print("ADD CLAUDE API KEY")
+        print("=" * 60)
+        print()
+        print("Add Claude API key for AI-powered report synthesis")
+        print("Get your key at: https://console.anthropic.com/settings/keys")
+        print("Cost: ~$0.50-$2.00 per report")
+        print()
+        claude_key = input("Claude API key: ").strip()
+        if claude_key:
+            config_mgr.save_claude_api_key(claude_key)
+            print()
+            print("✅ Done! Run with --ai flag to use AI-powered reports")
+        else:
+            print("[ERROR] No API key provided")
+        return 0
 
     # Mode 2: Check if credentials exist
     if not config_mgr.credentials_exist():
@@ -143,6 +166,41 @@ def main():
         else:
             print("  Fathom connection OK")
 
+    # Initialize Claude client if AI mode requested
+    claude_client = None
+    if args.ai:
+        if creds.get('claude_api_key'):
+            print("Initializing Claude AI client...")
+
+            # Get key metadata
+            key_metadata = config_mgr.get_claude_key_metadata()
+
+            # Pass metadata to Claude client
+            claude_client = ClaudeClient(
+                creds['claude_api_key'],
+                key_metadata=key_metadata
+            )
+
+            print("Testing Claude API connection...")
+            if not claude_client.test_connection():
+                print("[WARNING] Claude API authentication failed")
+                print("[WARNING] AI synthesis will not be available - using FREE templates")
+                claude_client = None
+            else:
+                print("  Claude API connection OK - AI synthesis enabled")
+
+                # Display key type
+                key_type = key_metadata.get("key_type", "UNKNOWN")
+                if key_type == "TEMP":
+                    desc = key_metadata.get('description', 'N/A')
+                    print(f"  Using shared team key: {desc}")
+                elif key_type == "PERMANENT":
+                    print("  Using personal API key (you manage billing)")
+        else:
+            print("[WARNING] --ai flag set but no Claude API key configured")
+            print("[WARNING] Run --config to add Claude API key, or use without --ai flag")
+            print("[WARNING] Continuing with FREE rule-based templates...")
+
     # Mode 3: Quick mode (use last config)
     if args.quick:
         if not args.sprint:
@@ -195,7 +253,7 @@ def main():
     print("=" * 60)
     print()
 
-    generator = SprintReportGenerator(jira_client, fathom_client, config)
+    generator = SprintReportGenerator(jira_client, fathom_client, config, claude_client)
 
     try:
         # Fetch data
@@ -229,6 +287,60 @@ def main():
         print(f"Debug Log:       {log_file}")
         print("=" * 60)
         print()
+
+        return 0
+
+    except CreditExhaustedError as e:
+        print()
+        print("=" * 60)
+        print("CLAUDE API CREDITS EXHAUSTED")
+        print("=" * 60)
+        print()
+        print("The shared Claude API key has run out of credits.")
+        print()
+        print("You have TWO OPTIONS to continue using AI-powered reports:")
+        print()
+        print("Option 1: Contact Tool Admin")
+        if e.admin_contact:
+            print(f"  Contact: {e.admin_contact}")
+            print("  Request: New shared API key or credit top-up")
+        else:
+            print("  Contact your team lead for a new shared key")
+        print()
+        print("Option 2: Add Your Personal API Key")
+        print("  Run: python csg-sprint-reporter.py --add-claude-key")
+        print("  Get key: https://console.anthropic.com/settings/keys")
+        print("  Cost: ~$0.50-$2.00 per report")
+        print()
+        print("=" * 60)
+        print()
+        print("Continuing with FREE rule-based report (no AI synthesis)...")
+        print()
+
+        # Continue with non-AI report
+        generator.claude_client = None
+
+        print("Calculating metrics...")
+        metrics = generator.calculate_metrics()
+
+        print("Generating report...")
+        markdown = generator.generate_markdown()
+
+        output_dir = Path.home() / "Downloads"
+        output_path = generator.save_report(output_dir)
+
+        print()
+        print("=" * 60)
+        print("REPORT GENERATED (WITHOUT AI)")
+        print("=" * 60)
+        print(f"Output:          {output_path}")
+        print(f"Total Issues:    {metrics.total_issues}")
+        print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
+        print(f"Meetings:        {len(generator.meetings)}")
+        print()
+        print("Note: This report uses FREE rule-based templates.")
+        print("      Add Claude API key to enable AI-powered synthesis.")
+        print("=" * 60)
 
         return 0
 

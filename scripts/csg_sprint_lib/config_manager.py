@@ -39,12 +39,14 @@ class ConfigManager:
         except Exception:
             return False
 
-    def save_credentials(self, jira_site: str, jira_email: str, jira_token: str, fathom_key: Optional[str] = None, uses_temp_token: bool = False) -> None:
+    def save_credentials(self, jira_site: str, jira_email: str, jira_token: str, fathom_key: Optional[str] = None, claude_api_key: Optional[str] = None) -> None:
         """Save credentials to keyring (encrypted) and config file"""
         # Save sensitive data to system keyring (encrypted)
         keyring.set_password(self.SERVICE_NAME, "jira_token", jira_token)
         if fathom_key:
             keyring.set_password(self.SERVICE_NAME, "fathom_key", fathom_key)
+        if claude_api_key:
+            keyring.set_password(self.SERVICE_NAME, "claude_api_key", claude_api_key)
 
         # Save non-sensitive data to JSON config file
         config = {
@@ -52,8 +54,7 @@ class ConfigManager:
             "jira_email": jira_email,
             "last_board": 38,  # Default board
             "last_sprint": None,
-            "jira_token_configured_at": datetime.now().isoformat(),
-            "uses_temp_token": uses_temp_token
+            "jira_token_configured_at": datetime.now().isoformat()
         }
 
         self.CONFIG_FILE.write_text(json.dumps(config, indent=2))
@@ -71,14 +72,17 @@ class ConfigManager:
         # Load sensitive data from keyring
         jira_token = keyring.get_password(self.SERVICE_NAME, "jira_token")
         fathom_key = keyring.get_password(self.SERVICE_NAME, "fathom_key")
+        claude_api_key = keyring.get_password(self.SERVICE_NAME, "claude_api_key")
 
         return {
             "jira_site": config["jira_site"],
             "jira_email": config["jira_email"],
             "jira_token": jira_token,
             "fathom_key": fathom_key,
+            "claude_api_key": claude_api_key,
             "last_board": config.get("last_board", 38),
-            "last_sprint": config.get("last_sprint")
+            "last_sprint": config.get("last_sprint"),
+            "last_meeting_filter": config.get("last_meeting_filter")
         }
 
     def save_last_config(self, board: int, sprint: int, meeting_filter: Optional[str] = None) -> None:
@@ -134,11 +138,57 @@ class ConfigManager:
             print("[ERROR] Fathom API key is required")
             return
 
+        # Collect Claude API key (optional - for AI-enhanced reports)
+        print()
+        print("Claude API Key (OPTIONAL - for AI-powered narrative synthesis)")
+        print("  Get from: https://console.anthropic.com/settings/keys")
+        print("  Cost: ~$0.50-$2.00 per report (depending on meeting volume)")
+        print("  Press Enter to skip (use FREE rule-based templates)")
+        print("  (Ctrl+Click the link above to open in your browser)")
+        claude_api_key = input("Claude API key [optional]: ").strip()
+
         # Save credentials
-        self.save_credentials(jira_site, jira_email, jira_token, fathom_key)
+        self.save_credentials(jira_site, jira_email, jira_token, fathom_key, claude_api_key if claude_api_key else None)
         print()
-        print("[OK] Setup complete! You can now run the sprint reporter.")
+        if claude_api_key:
+            print("[OK] Setup complete! You can now run the sprint reporter with --ai flag for AI-powered reports.")
+        else:
+            print("[OK] Setup complete! You can now run the sprint reporter (using FREE rule-based templates).")
         print()
+
+    def save_claude_api_key(self, claude_api_key: str) -> None:
+        """Save Claude API key for existing users (marked as PERMANENT)"""
+        if claude_api_key:
+            keyring.set_password(self.SERVICE_NAME, "claude_api_key", claude_api_key)
+
+            # Mark as PERMANENT personal key
+            config = self._load_config_file()
+            config.update({
+                "claude_key_type": "PERMANENT",
+                "claude_key_configured_at": datetime.now().isoformat()
+            })
+            self.CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+            print("[OK] Personal Claude API key stored (PERMANENT)")
+            print("[OK] No credit monitoring - you manage your own billing")
+            print("[OK] You can now use --ai flag for AI-powered reports")
+        else:
+            print("[ERROR] Claude API key cannot be empty")
+
+    def get_claude_key_metadata(self) -> Dict[str, str]:
+        """Get metadata about configured Claude API key"""
+        config = self._load_config_file()
+        return {
+            "key_type": config.get("claude_key_type", "UNKNOWN"),
+            "configured_at": config.get("claude_key_configured_at"),
+            "admin_contact": config.get("admin_contact"),
+            "description": config.get("claude_key_description", "")
+        }
+
+    def is_shared_temp_key(self) -> bool:
+        """Check if current key is a shared temporary key"""
+        config = self._load_config_file()
+        return config.get("claude_key_type") == "TEMP"
 
     def check_token_expiration(self) -> Optional[str]:
         """
