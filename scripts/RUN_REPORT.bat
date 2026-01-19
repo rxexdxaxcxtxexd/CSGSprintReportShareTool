@@ -26,7 +26,10 @@ echo ============================================================
 echo DONE!
 echo ============================================================
 echo.
-echo Your report has been saved to your Downloads folder.
-echo Look for: sprint-report-YYYY-MM-DD-HHMMSS.md
+echo Your Word report has been saved to:
+echo OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\
+echo Look for: CSG-Sprint-%SPRINT_NUM%-Report.docx
+echo.
+echo (Markdown version also saved to Downloads if needed)
 echo.
 pause
