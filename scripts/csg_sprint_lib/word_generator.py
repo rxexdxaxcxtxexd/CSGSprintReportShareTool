@@ -120,15 +120,15 @@ class WordDocumentGenerator:
         self.document.add_heading('Key Metrics', level=1)
 
         # Metrics table
-        table = self.document.add_table(rows=5, cols=2)
-        table.style = 'Light Grid Accent 1'
+        table = self.document.add_table(rows=4, cols=2)
+        table.style = 'Table Grid'
 
         metrics_data = [
             ('Total Issues', str(metrics.total_issues)),
             ('Completed', f"{metrics.done_count} ({metrics.completion_rate:.1f}%)"),
             ('In Progress', str(metrics.in_progress_count)),
-            ('Not Started', str(metrics.not_started_count)),
-            ('Story Points Completed', f"{metrics.completed_points}/{metrics.total_points}")
+            ('Not Started', str(metrics.not_started_count))
+            # Note: Story points not tracked in this version
         ]
 
         for i, (label, value) in enumerate(metrics_data):
@@ -198,9 +198,7 @@ class WordDocumentGenerator:
             p.add_run(f"{stats.get('done_count', 0)}/{stats.get('total', 0)} ")
             p.add_run(f"({completion:.1f}%)")
 
-            p = self.document.add_paragraph()
-            p.add_run(f"Story Points: ").bold = True
-            p.add_run(f"{stats.get('completed_points', 0)}/{stats.get('total_points', 0)}")
+            # Story points not tracked in current version
 
         self.document.add_paragraph()
 
