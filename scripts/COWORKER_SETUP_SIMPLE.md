@@ -95,16 +95,19 @@ Just type your work email: `yourname@csgsolutions.com`
 
 **Windows:**
 1. Double-click `RUN_REPORT.bat`
-2. When asked for sprint number, type: `13` (or current sprint)
-3. When asked for meeting keyword, type: `iBOPS` (or your team name)
-4. Wait 1-2 minutes
+2. The interactive menu will appear - follow the prompts:
+   - Select your board (e.g., "iBOPS Board")
+   - Select your sprint number (e.g., "Sprint 13")
+   - Choose if you want meeting insights included
+3. Wait 1-2 minutes
 
 **Mac/Linux:**
 ```bash
 ./run_report.sh
 ```
 
-**Your report will appear in your Downloads folder!**
+**Your Word report will appear in OneDrive!**
+`C:\Users\<your-name>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\`
 
 ---
 
@@ -115,7 +118,7 @@ Once configured, generating reports is easy:
 **Windows:** Double-click `RUN_REPORT.bat`
 **Mac/Linux:** Run `./run_report.sh`
 
-The tool remembers your settings, so you only need to confirm the sprint number.
+The interactive menu will guide you through selecting your board and sprint. The tool remembers your last selections, making it even faster!
 
 ---
 
@@ -136,15 +139,12 @@ The tool remembers your settings, so you only need to confirm the sprint number.
 This uses the company template for professional formatting!
 
 **Want markdown instead?**
-Add `--format md` when running the report:
-```bash
-python csg-sprint-reporter.py --quick --sprint 13 --format md
-```
+The interactive menu will let you choose the format (Word/Markdown/Both) when generating the report.
 
-**Want both formats?**
-Add `--format both`:
+**Advanced Users:** You can also use command-line flags:
 ```bash
-python csg-sprint-reporter.py --quick --sprint 13 --format both
+python csg-sprint-reporter.py --ai --format md    # Markdown only
+python csg-sprint-reporter.py --ai --format both  # Both formats
 ```
 
 **Viewing reports:**
@@ -191,8 +191,8 @@ He set this up to make our lives easier, so don't hesitate to ask questions!
 📥 Download tool → Extract ZIP
 🔧 Double-click INSTALL.bat
 ⚙️ Double-click SETUP.bat (enter credentials)
-▶️ Double-click RUN_REPORT.bat (enter sprint #)
-📄 Check Downloads folder for report
+▶️ Double-click RUN_REPORT.bat (use interactive menu)
+📄 Check OneDrive folder for Word report
 ```
 
 **That's it!** 🎉
