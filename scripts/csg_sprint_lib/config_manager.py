@@ -243,17 +243,10 @@ class ConfigManager:
         self.CONFIG_FILE.write_text(json.dumps(config, indent=2))
 
     def get_output_directory(self, format_type: str = "docx") -> Path:
-        """Get output directory based on format"""
-        if format_type == "docx":
-            # Save Word docs to template directory
-            template_path = self.get_template_path()
-            if template_path:
-                return template_path.parent
-            # Fallback to Downloads
-            return Path.home() / "Downloads"
-        else:
-            # Markdown to Downloads
-            return Path.home() / "Downloads"
+        """Get output directory - always use Downloads folder for reliability"""
+        # SIMPLIFIED: Always use Downloads folder for all formats
+        # This ensures consistent, predictable output location across all systems
+        return Path.home() / "Downloads"
 
     def _load_config_file(self) -> Dict:
         """Load config file from disk"""

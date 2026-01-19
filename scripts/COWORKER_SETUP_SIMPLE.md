@@ -106,8 +106,8 @@ Just type your work email: `yourname@csgsolutions.com`
 ./run_report.sh
 ```
 
-**Your Word report will appear in OneDrive!**
-`C:\Users\<your-name>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\`
+**Your Word report will appear in your Downloads folder!**
+`C:\Users\<your-name>\Downloads\`
 
 ---
 
@@ -134,9 +134,9 @@ The interactive menu will guide you through selecting your board and sprint. The
 ## Output Format
 
 **By default, reports are saved as Word documents (.docx)** to:
-`C:\Users\<your-name>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\`
+`C:\Users\<your-name>\Downloads\`
 
-This uses the company template for professional formatting!
+Look for files named `CSG-Sprint-13-Report.docx` (with your sprint number)
 
 **Want markdown instead?**
 The interactive menu will let you choose the format (Word/Markdown/Both) when generating the report.
@@ -192,7 +192,7 @@ He set this up to make our lives easier, so don't hesitate to ask questions!
 🔧 Double-click INSTALL.bat
 ⚙️ Double-click SETUP.bat (enter credentials)
 ▶️ Double-click RUN_REPORT.bat (use interactive menu)
-📄 Check OneDrive folder for Word report
+📄 Check Downloads folder for Word report
 ```
 
 **That's it!** 🎉
