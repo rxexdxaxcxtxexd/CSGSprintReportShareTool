@@ -340,29 +340,70 @@ class ClaudeClient:
         self.api_key = api_key
         self.key_metadata = key_metadata or {}
         try:
-            from anthropic import Anthropic, RateLimitError as AnthropicRateLimitError, AuthenticationError as AnthropicAuthenticationError
+            from anthropic import Anthropic, RateLimitError, AuthenticationError
             self.client = Anthropic(api_key=api_key)
             self.available = True
-            self.AnthropicRateLimitError = AnthropicRateLimitError
-            self.AnthropicAuthenticationError = AnthropicAuthenticationError
+            # Store exception classes for cleaner exception handling
+            self.RateLimitError = RateLimitError
+            self.AuthenticationError = AuthenticationError
         except ImportError:
             logger.error("anthropic package not installed. Install with: pip install anthropic")
             self.available = False
+            # Define dummy exception classes so isinstance checks don't fail
+            self.RateLimitError = Exception
+            self.AuthenticationError = Exception
         except Exception as e:
             logger.error(f"Failed to initialize Claude client: {e}")
             self.available = False
+            # Define dummy exception classes for safety
+            self.RateLimitError = Exception
+            self.AuthenticationError = Exception
 
     def _is_credit_exhaustion_error(self, error) -> bool:
         """
-        Check if RateLimitError is due to credit exhaustion.
-        Anthropic returns HTTP 429 with message containing billing keywords.
+        Check if RateLimitError is due to credit exhaustion using multi-tier detection.
+
+        Priority 1: HTTP status code (402 = Payment Required)
+        Priority 2: Check error attributes (type, code, error_type)
+        Priority 3: Keyword matching in error message (fallback)
+
+        Returns True if error indicates insufficient credits/quota.
         """
+        # Priority 1: Check HTTP status code for payment issues
+        if hasattr(error, 'status_code'):
+            # 402 Payment Required = definite billing issue
+            if error.status_code == 402:
+                logger.info("Credit exhaustion detected via HTTP 402 status code")
+                return True
+            # 429 could be rate limit OR billing - need to check message
+            # Other codes (401, 403, etc.) are not credit exhaustion
+            if error.status_code != 429:
+                return False
+
+        # Priority 2: Check structured error attributes if available
+        # Anthropic SDK may include type/code fields in response
+        if hasattr(error, 'type') and error.type in ['insufficient_quota', 'billing_error', 'payment_required']:
+            logger.info(f"Credit exhaustion detected via error type: {error.type}")
+            return True
+
+        if hasattr(error, 'code') and error.code in ['insufficient_quota', 'payment_required', 'billing_error']:
+            logger.info(f"Credit exhaustion detected via error code: {error.code}")
+            return True
+
+        # Priority 3: Fallback to keyword matching in error message
+        # This catches cases where structured data isn't available
         error_msg = str(error).lower()
         credit_keywords = [
             "credit", "billing", "balance", "quota",
-            "insufficient funds", "payment"
+            "insufficient funds", "payment", "account limit"
         ]
-        return any(keyword in error_msg for keyword in credit_keywords)
+
+        if any(keyword in error_msg for keyword in credit_keywords):
+            logger.warning(f"Credit exhaustion detected via keyword matching (fallback): {error_msg[:100]}")
+            return True
+
+        # If none of the above matched, it's likely a regular rate limit
+        return False
 
     def test_connection(self) -> bool:
         """Test Claude API key validity"""
@@ -377,21 +418,19 @@ class ClaudeClient:
                 messages=[{"role": "user", "content": "test"}]
             )
             return True
-        except Exception as e:
-            # Check for specific error types if available
-            if self.available and hasattr(self, 'AnthropicAuthenticationError') and isinstance(e, self.AnthropicAuthenticationError):
-                logger.error(f"Claude API authentication failed: {e}")
+        except self.AuthenticationError as e:
+            logger.error(f"Claude API authentication failed: {e}")
+            return False
+        except self.RateLimitError as e:
+            if self._is_credit_exhaustion_error(e):
+                logger.error(f"Claude API credits exhausted: {e}")
                 return False
-            elif self.available and hasattr(self, 'AnthropicRateLimitError') and isinstance(e, self.AnthropicRateLimitError):
-                if self._is_credit_exhaustion_error(e):
-                    logger.error(f"Claude API credits exhausted: {e}")
-                    return False
-                else:
-                    logger.warning(f"Claude API rate limited (retry later): {e}")
-                    return False
             else:
-                logger.error(f"Claude API test failed: {e}")
+                logger.warning(f"Claude API rate limited (retry later): {e}")
                 return False
+        except Exception as e:
+            logger.error(f"Claude API test failed: {e}")
+            return False
 
     def synthesize_meeting_insights(self, meetings: List[Dict], sprint_context: str) -> Dict[str, str]:
         """
@@ -477,37 +516,35 @@ Format your response as:
             logger.info(f"AI synthesis complete. Tokens used: {response.usage.input_tokens + response.usage.output_tokens}")
             return result
 
-        except Exception as e:
-            # Check for specific error types if available
-            if self.available and hasattr(self, 'AnthropicRateLimitError') and isinstance(e, self.AnthropicRateLimitError):
-                if self._is_credit_exhaustion_error(e):
-                    logger.error(f"Claude API credits exhausted: {e}")
-                    admin_contact = self.key_metadata.get("admin_contact")
-                    raise CreditExhaustedError(
-                        "Shared Claude API key has run out of credits",
-                        admin_contact=admin_contact
-                    )
-                else:
-                    logger.error(f"Claude API rate limited: {e}")
-                    return {
-                        "executive_summary": "",
-                        "key_decisions": "",
-                        "meeting_themes": ""
-                    }
-            elif self.available and hasattr(self, 'AnthropicAuthenticationError') and isinstance(e, self.AnthropicAuthenticationError):
-                logger.error(f"Claude API authentication failed: {e}")
-                return {
-                    "executive_summary": "",
-                    "key_decisions": "",
-                    "meeting_themes": ""
-                }
+        except self.RateLimitError as e:
+            if self._is_credit_exhaustion_error(e):
+                logger.error(f"Claude API credits exhausted: {e}")
+                admin_contact = self.key_metadata.get("admin_contact")
+                raise CreditExhaustedError(
+                    "Shared Claude API key has run out of credits",
+                    admin_contact=admin_contact
+                )
             else:
-                logger.error(f"Claude API synthesis failed: {e}")
+                logger.error(f"Claude API rate limited: {e}")
                 return {
                     "executive_summary": "",
                     "key_decisions": "",
                     "meeting_themes": ""
                 }
+        except self.AuthenticationError as e:
+            logger.error(f"Claude API authentication failed: {e}")
+            return {
+                "executive_summary": "",
+                "key_decisions": "",
+                "meeting_themes": ""
+            }
+        except Exception as e:
+            logger.error(f"Claude API synthesis failed: {e}")
+            return {
+                "executive_summary": "",
+                "key_decisions": "",
+                "meeting_themes": ""
+            }
 
     def _extract_section(self, text: str, start_marker: str, end_marker: Optional[str]) -> str:
         """Extract content between two section markers"""
