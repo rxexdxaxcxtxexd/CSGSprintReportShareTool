@@ -70,16 +70,18 @@ class WordDocumentGenerator:
 
     def _add_header_section(self, sprint_data: Dict[str, Any]) -> None:
         """Add report header with sprint info"""
-        # Title
-        title = self.document.add_heading(
-            f"Sprint {sprint_data['sprint_number']} Report",
-            level=0
-        )
+        # Title - use add_paragraph instead of add_heading to avoid style dependencies
+        title = self.document.add_paragraph(f"Sprint {sprint_data['sprint_number']} Report")
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        # Metadata table
+        # Make title bold and large
+        run = title.runs[0]
+        run.bold = True
+        run.font.size = Pt(20)
+
+        # Metadata table - don't set style to avoid dependency on template styles
         table = self.document.add_table(rows=4, cols=2)
-        table.style = 'Light Grid Accent 1'
+        table.style = 'Table Grid'  # Use basic built-in style
 
         cells = [
             ('Board:', sprint_data['board_name']),

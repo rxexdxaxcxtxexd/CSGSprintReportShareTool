@@ -281,13 +281,9 @@ def main():
         # Determine output format
         format_type = args.format if args.format else config_mgr.get_default_format()
 
-        # Get template path if using Word format
+        # SIMPLIFIED: Don't use templates - they cause style compatibility issues
+        # Word docs will be generated with standard formatting
         template_path = None
-        if format_type in ['docx', 'both']:
-            if args.template:
-                template_path = Path(args.template)
-            else:
-                template_path = config_mgr.get_template_path()
 
         # Generate report(s)
         print("Generating report...")
@@ -394,13 +390,9 @@ def main():
         # Determine output format
         format_type = args.format if args.format else config_mgr.get_default_format()
 
-        # Get template path if using Word format
+        # SIMPLIFIED: Don't use templates - they cause style compatibility issues
+        # Word docs will be generated with standard formatting
         template_path = None
-        if format_type in ['docx', 'both']:
-            if args.template:
-                template_path = Path(args.template)
-            else:
-                template_path = config_mgr.get_template_path()
 
         # Generate report
         print("Generating report...")
