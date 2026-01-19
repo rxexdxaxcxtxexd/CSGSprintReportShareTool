@@ -231,8 +231,12 @@ def main():
             # Save for next time
             config_mgr.save_last_config(creds.get('last_board', 38), args.sprint, last_meeting_filter)
 
+        board_id = creds.get('last_board', 38)
+        board_name = jira_client.get_board_name(board_id)  # CRITICAL: Fetch board name
+
         config = {
-            'board_id': creds.get('last_board', 38),
+            'board_id': board_id,
+            'board_name': board_name,  # CRITICAL: Add board_name to config
             'sprint_number': args.sprint,
             'meeting_filter': last_meeting_filter,
             'custom_dates': None,
@@ -245,7 +249,7 @@ def main():
                 'meeting_insights': True
             }
         }
-        print(f"Quick mode: Board {config['board_id']}, Sprint {config['sprint_number']}, Meetings: '{last_meeting_filter}'")
+        print(f"Quick mode: {board_name} (ID: {board_id}), Sprint {config['sprint_number']}, Meetings: '{last_meeting_filter}'")
 
     # Mode 4: Interactive mode (default)
     else:

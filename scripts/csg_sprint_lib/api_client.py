@@ -148,6 +148,22 @@ class JiraClient:
 
         return fetch_with_retry(call)
 
+    def get_all_boards(self) -> List[Dict]:
+        """Get all boards accessible to the user"""
+        def call():
+            url = f"{self.agile_url}/board"
+            response = self.session.get(url, timeout=10, params={'maxResults': 100})
+            response.raise_for_status()
+            data = response.json()
+            return data.get('values', [])
+
+        try:
+            boards = fetch_with_retry(call)
+            return [{'id': b['id'], 'name': b['name']} for b in boards]
+        except Exception as e:
+            logger.warning(f"Could not fetch boards: {e}")
+            return []
+
     def get_board_name(self, board_id: int) -> str:
         """Get board name by ID"""
         def call():

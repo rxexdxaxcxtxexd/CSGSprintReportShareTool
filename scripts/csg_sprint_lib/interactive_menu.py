@@ -25,7 +25,9 @@ class InteractiveMenu:
         config = {}
 
         # 1. Board selection
-        config['board_id'] = self.prompt_board_selection()
+        board_id, board_name = self.prompt_board_selection()
+        config['board_id'] = board_id
+        config['board_name'] = board_name  # CRITICAL: Also save board_name
 
         # 2. Sprint number
         config['sprint_number'] = self.prompt_sprint_number()
@@ -45,41 +47,71 @@ class InteractiveMenu:
 
         return config
 
-    def prompt_board_selection(self) -> int:
-        """Prompt for board (default 38) with name display"""
+    def prompt_board_selection(self) -> Tuple[int, str]:
+        """Prompt for board selection with user-friendly menu"""
         print("1. Board Selection")
         print()
+        print("Fetching available boards...")
+        print()
 
-        # Try to get default board name
-        default_board_id = 38
-        try:
-            default_board_name = self.jira_client.get_board_name(default_board_id)
-            print(f"Default: Board {default_board_id} ({default_board_name})")
-        except:
-            print(f"Default: Board {default_board_id}")
+        # Get all boards
+        boards = self.jira_client.get_all_boards()
+
+        if not boards:
+            # Fallback to manual entry if API fails
+            print("⚠️  Could not load boards. Please enter board ID manually.")
+            print("   (Find it at end of board URL: .../boards/38)")
+            print()
+            response = input("Board ID: ").strip()
+
+            try:
+                board_id = int(response)
+                board_name = self.jira_client.get_board_name(board_id)
+                return (board_id, board_name)
+            except:
+                # Last resort: use whatever they entered
+                return (int(response), f"Board {response}")
+
+        # Show numbered menu
+        print("Available Boards:")
+        print()
+        for i, board in enumerate(boards, 1):
+            print(f"  {i}. {board['name']} (ID: {board['id']})")
 
         print()
-        print("Enter board ID (appears at end of board URL)")
-        print("e.g., https://csgsolutions.atlassian.net/.../boards/38")
-        print()
-        response = input("Board ID [38]: ").strip()
+        print("Select a board by number, or press Enter for default")
 
+        # Find default board (ID 38) or use first board
+        default_idx = 1
+        for i, board in enumerate(boards, 1):
+            if board['id'] == 38:
+                default_idx = i
+                break
+
+        print(f"Default: [{default_idx}] {boards[default_idx - 1]['name']}")
+        print()
+
+        response = input(f"Selection [{ default_idx}]: ").strip()
+
+        # Use default if empty
         if not response:
-            return default_board_id
+            selected_board = boards[default_idx - 1]
+            print(f"  ✓ Selected: {selected_board['name']}")
+            return (selected_board['id'], selected_board['name'])
 
+        # Parse selection
         try:
-            board_id = int(response)
-            # Validate board exists and show name
-            board_name = self.jira_client.get_board_name(board_id)
-            print(f"  Selected: {board_name}")
-            return board_id
+            selection = int(response)
+            if 1 <= selection <= len(boards):
+                selected_board = boards[selection - 1]
+                print(f"  ✓ Selected: {selected_board['name']}")
+                return (selected_board['id'], selected_board['name'])
+            else:
+                print(f"  Invalid selection. Using default: {boards[default_idx - 1]['name']}")
+                return (boards[default_idx - 1]['id'], boards[default_idx - 1]['name'])
         except ValueError:
-            print("  Invalid board ID, using default (38)")
-            return default_board_id
-        except Exception as e:
-            print(f"  Warning: Could not validate board {response}: {e}")
-            print("  Using anyway...")
-            return int(response)
+            print(f"  Invalid input. Using default: {boards[default_idx - 1]['name']}")
+            return (boards[default_idx - 1]['id'], boards[default_idx - 1]['name'])
 
     def prompt_sprint_number(self) -> int:
         """Prompt for sprint number (manual entry, no auto-detect)"""
@@ -189,7 +221,7 @@ class InteractiveMenu:
         print("=" * 60)
         print("Configuration Summary")
         print("=" * 60)
-        print(f"Board:           {config['board_id']}")
+        print(f"Board:           {config.get('board_name', 'Unknown')} (ID: {config['board_id']})")
         print(f"Sprint:          {config['sprint_number']}")
         print(f"Meeting Filter:  {config['meeting_filter']}")
 
