@@ -128,12 +128,28 @@ The tool remembers your settings, so you only need to confirm the sprint number.
 ✅ Identified blockers
 ✅ Team velocity trends
 
-Reports are saved as `.md` files in your Downloads folder.
+## Output Format
+
+**By default, reports are saved as Word documents (.docx)** to:
+`C:\Users\<your-name>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\`
+
+This uses the company template for professional formatting!
+
+**Want markdown instead?**
+Add `--format md` when running the report:
+```bash
+python csg-sprint-reporter.py --quick --sprint 13 --format md
+```
+
+**Want both formats?**
+Add `--format both`:
+```bash
+python csg-sprint-reporter.py --quick --sprint 13 --format both
+```
 
 **Viewing reports:**
-- Open with Notepad/TextEdit
-- Open with VS Code (prettier formatting)
-- Convert to PDF with https://dillinger.io/
+- Word (.docx): Open with Microsoft Word
+- Markdown (.md): Open with Notepad/TextEdit or VS Code
 
 ---
 

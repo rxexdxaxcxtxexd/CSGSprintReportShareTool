@@ -143,11 +143,53 @@ The tool will automatically continue with free templates if credits run out.
 
 ---
 
+## Output Formats and Templates
+
+**Default Format:** Word documents (.docx) using company template
+
+**Output Location:**
+- Word docs: `C:\Users\<you>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\`
+- Markdown: `~/Downloads`
+
+**Format Options:**
+
+```bash
+# Word document (default)
+python scripts/csg-sprint-reporter.py --quick --sprint 14
+
+# Markdown format
+python scripts/csg-sprint-reporter.py --quick --sprint 14 --format md
+
+# Both formats
+python scripts/csg-sprint-reporter.py --quick --sprint 14 --format both
+
+# Custom template
+python scripts/csg-sprint-reporter.py --quick --sprint 14 --template "/path/to/template.docx"
+```
+
+**Template Configuration:**
+
+The tool uses this template by default:
+`C:\Users\<you>\OneDrive - Cornerstone Solutions Group\Desktop\Files in use\Michael SRT\Doc Template.docx`
+
+To use a different template, either:
+1. Pass `--template` flag with each run
+2. Or configure default in `~/.csg-sprint-config.json`:
+   ```json
+   {
+     "word_template_path": "C:\\path\\to\\your\\template.docx",
+     "default_format": "docx"
+   }
+   ```
+
+---
+
 ## Tips
 
 - Run reports at end of sprint for complete data
 - Use `--ai` flag for AI insights (uses shared credits)
-- Reports are plain markdown - easy to share or convert to PDF
+- Word format provides professional formatting for stakeholders
+- Markdown format is great for version control and sharing
 - The tool remembers your last sprint settings
 
 ---

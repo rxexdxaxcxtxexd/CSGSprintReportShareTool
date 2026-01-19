@@ -43,6 +43,17 @@ def main():
     parser.add_argument("--quick", action="store_true", help="Skip interactive menu, use last config")
     parser.add_argument("--sprint", type=int, help="Sprint number (required for --quick mode)")
     parser.add_argument("--ai", action="store_true", help="Use AI-powered narrative synthesis (requires Claude API key)")
+    parser.add_argument(
+        '--format',
+        choices=['docx', 'md', 'both'],
+        default=None,
+        help='Output format: docx (Word), md (Markdown), or both (default: docx)'
+    )
+    parser.add_argument(
+        '--template',
+        type=str,
+        help='Path to Word template .docx file (optional)'
+    )
 
     args = parser.parse_args()
 
@@ -263,29 +274,82 @@ def main():
         print("Calculating metrics...")
         metrics = generator.calculate_metrics()
 
-        # Generate markdown
+        # Determine output format
+        format_type = args.format if args.format else config_mgr.get_default_format()
+
+        # Get template path if using Word format
+        template_path = None
+        if format_type in ['docx', 'both']:
+            if args.template:
+                template_path = Path(args.template)
+            else:
+                template_path = config_mgr.get_template_path()
+
+        # Generate report(s)
         print("Generating report...")
-        markdown = generator.generate_markdown()
+        if format_type == 'both':
+            # Generate both formats
+            output_dir_word = config_mgr.get_output_directory('docx')
+            output_path_word = generator.save_report(
+                output_dir_word,
+                format_type='docx',
+                template_path=template_path
+            )
 
-        # Save report
-        output_dir = Path.home() / "Downloads"
-        output_path = generator.save_report(output_dir)
+            output_dir_md = config_mgr.get_output_directory('md')
+            markdown = generator.generate_markdown()  # Generate markdown for metrics display
+            output_path_md = generator.save_report(
+                output_dir_md,
+                format_type='md'
+            )
 
-        # Save last config for quick mode
-        config_mgr.save_last_config(config['board_id'], config['sprint_number'], config['meeting_filter'])
+            # Save last config for quick mode
+            config_mgr.save_last_config(config['board_id'], config['sprint_number'], config['meeting_filter'])
 
-        # Success summary
-        print()
-        print("=" * 60)
-        print("REPORT GENERATED SUCCESSFULLY")
-        print("=" * 60)
-        print(f"Output:          {output_path}")
-        print(f"Total Issues:    {metrics.total_issues}")
-        print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
-        print(f"In Progress:     {metrics.in_progress_count}")
-        print(f"Meetings:        {len(generator.meetings)}")
-        print(f"Debug Log:       {log_file}")
-        print("=" * 60)
+            # Success summary
+            print()
+            print("=" * 60)
+            print("REPORTS GENERATED SUCCESSFULLY")
+            print("=" * 60)
+            print(f"Word:            {output_path_word}")
+            print(f"Markdown:        {output_path_md}")
+            print(f"Total Issues:    {metrics.total_issues}")
+            print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
+            print(f"In Progress:     {metrics.in_progress_count}")
+            print(f"Meetings:        {len(generator.meetings)}")
+            print(f"Debug Log:       {log_file}")
+            print("=" * 60)
+
+        else:
+            # Generate single format
+            output_dir = config_mgr.get_output_directory(format_type)
+
+            # Generate markdown if needed (for display)
+            if format_type == 'md':
+                markdown = generator.generate_markdown()
+
+            output_path = generator.save_report(
+                output_dir,
+                format_type=format_type,
+                template_path=template_path
+            )
+
+            # Save last config for quick mode
+            config_mgr.save_last_config(config['board_id'], config['sprint_number'], config['meeting_filter'])
+
+            # Success summary
+            print()
+            print("=" * 60)
+            print("REPORT GENERATED SUCCESSFULLY")
+            print("=" * 60)
+            print(f"Output:          {output_path}")
+            print(f"Format:          {format_type.upper()}")
+            print(f"Total Issues:    {metrics.total_issues}")
+            print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
+            print(f"In Progress:     {metrics.in_progress_count}")
+            print(f"Meetings:        {len(generator.meetings)}")
+            print(f"Debug Log:       {log_file}")
+            print("=" * 60)
         print()
 
         return 0
@@ -323,17 +387,32 @@ def main():
         print("Calculating metrics...")
         metrics = generator.calculate_metrics()
 
-        print("Generating report...")
-        markdown = generator.generate_markdown()
+        # Determine output format
+        format_type = args.format if args.format else config_mgr.get_default_format()
 
-        output_dir = Path.home() / "Downloads"
-        output_path = generator.save_report(output_dir)
+        # Get template path if using Word format
+        template_path = None
+        if format_type in ['docx', 'both']:
+            if args.template:
+                template_path = Path(args.template)
+            else:
+                template_path = config_mgr.get_template_path()
+
+        # Generate report
+        print("Generating report...")
+        output_dir = config_mgr.get_output_directory(format_type)
+        output_path = generator.save_report(
+            output_dir,
+            format_type=format_type,
+            template_path=template_path
+        )
 
         print()
         print("=" * 60)
         print("REPORT GENERATED (WITHOUT AI)")
         print("=" * 60)
         print(f"Output:          {output_path}")
+        print(f"Format:          {format_type.upper()}")
         print(f"Total Issues:    {metrics.total_issues}")
         print(f"Completed:       {metrics.done_count} ({metrics.completion_rate:.1f}%)")
         print(f"Meetings:        {len(generator.meetings)}")
@@ -343,6 +422,27 @@ def main():
         print("=" * 60)
 
         return 0
+
+    except ImportError as e:
+        if 'docx' in str(e):
+            print()
+            print("=" * 60)
+            print("MISSING DEPENDENCY: python-docx")
+            print("=" * 60)
+            print()
+            print("The python-docx library is required for Word document generation.")
+            print()
+            print("To install it, run:")
+            print("  pip install python-docx")
+            print()
+            print("Or install all dependencies:")
+            print("  pip install -r requirements-sprint-reporter.txt")
+            print()
+            print("=" * 60)
+            return 1
+        else:
+            # Re-raise other import errors
+            raise
 
     except KeyboardInterrupt:
         print()

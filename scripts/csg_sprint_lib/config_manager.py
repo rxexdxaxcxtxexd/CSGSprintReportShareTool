@@ -198,6 +198,63 @@ class ConfigManager:
         """
         return None
 
+    def get_default_format(self) -> str:
+        """Get default output format (docx or md)"""
+        config = self._load_config_file()
+        return config.get("default_format", "docx")
+
+    def set_default_format(self, format_type: str) -> None:
+        """Set default output format"""
+        if format_type not in ["docx", "md"]:
+            raise ValueError("Format must be 'docx' or 'md'")
+
+        config = self._load_config_file()
+        config["default_format"] = format_type
+        self.CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+    def get_template_path(self) -> Optional[Path]:
+        """Get configured Word template path"""
+        config = self._load_config_file()
+        template_path = config.get("word_template_path")
+
+        if template_path:
+            return Path(template_path)
+
+        # Default template location
+        default_path = Path.home() / "OneDrive - Cornerstone Solutions Group" / \
+                       "Desktop" / "Files in use" / "Michael SRT" / "Doc Template.docx"
+
+        if default_path.exists():
+            return default_path
+
+        return None
+
+    def set_template_path(self, template_path: str) -> None:
+        """Set Word template path"""
+        path = Path(template_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Template not found: {template_path}")
+
+        if not path.suffix == ".docx":
+            raise ValueError("Template must be a .docx file")
+
+        config = self._load_config_file()
+        config["word_template_path"] = str(path)
+        self.CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+    def get_output_directory(self, format_type: str = "docx") -> Path:
+        """Get output directory based on format"""
+        if format_type == "docx":
+            # Save Word docs to template directory
+            template_path = self.get_template_path()
+            if template_path:
+                return template_path.parent
+            # Fallback to Downloads
+            return Path.home() / "Downloads"
+        else:
+            # Markdown to Downloads
+            return Path.home() / "Downloads"
+
     def _load_config_file(self) -> Dict:
         """Load config file from disk"""
         if not self.CONFIG_FILE.exists():

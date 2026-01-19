@@ -9,7 +9,8 @@ from datetime import datetime
 import logging
 
 from .models import JiraIssue, FathomMeeting, SprintMetrics
-from .api_client import JiraClient, FathomClient
+from .api_client import JiraClient, FathomClient, ClaudeClient
+from .word_generator import WordDocumentGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +18,17 @@ logger = logging.getLogger(__name__)
 class SprintReportGenerator:
     """Generates sprint reports from Jira and Fathom data"""
 
-    def __init__(self, jira_client: JiraClient, fathom_client: Optional[FathomClient], config: dict):
+    def __init__(self, jira_client: JiraClient, fathom_client: Optional[FathomClient], config: dict, claude_client: Optional[ClaudeClient] = None):
         self.jira_client = jira_client
         self.fathom_client = fathom_client
+        self.claude_client = claude_client
         self.config = config
 
         self.sprint = None
         self.issues: List[JiraIssue] = []
         self.meetings: List[FathomMeeting] = []
         self.metrics: Optional[SprintMetrics] = None
+        self.ai_insights: Optional[Dict] = None
 
     def fetch_data(self) -> None:
         """Fetch sprint data from Jira and Fathom"""
@@ -119,6 +122,34 @@ class SprintReportGenerator:
                 self.meetings = []
         else:
             self.config['include_meetings'] = False
+
+        # Synthesize meeting insights with AI if Claude client available
+        if self.claude_client and self.meetings:
+            print("Synthesizing meeting insights with AI...")
+            sprint_context = f"""
+Sprint: {self.sprint.get('name', 'Unknown')}
+Date Range: {self.sprint.get('start_date')} to {self.sprint.get('end_date')}
+Total Issues: {len(self.issues)}
+"""
+            # Convert FathomMeeting objects to dicts for Claude client
+            meeting_dicts = [
+                {
+                    'title': m.title,
+                    'date': m.date.strftime('%Y-%m-%d') if m.date else 'Unknown',
+                    'summary': m.summary or 'No summary',
+                    'action_items': m.action_items or []
+                }
+                for m in self.meetings
+            ]
+            self.ai_insights = self.claude_client.synthesize_meeting_insights(
+                meeting_dicts,
+                sprint_context
+            )
+            if self.ai_insights and any(self.ai_insights.values()):
+                print("  AI synthesis complete")
+            else:
+                print("  AI synthesis failed - using rule-based templates")
+                self.ai_insights = None
 
     def calculate_metrics(self) -> SprintMetrics:
         """Calculate sprint metrics from issues"""
@@ -221,6 +252,15 @@ class SprintReportGenerator:
         # === EXECUTIVE SUMMARY ===
         lines.append("## Executive Summary")
         lines.append("")
+
+        # Use AI-generated summary if available
+        if self.ai_insights and self.ai_insights.get('executive_summary'):
+            lines.append(self.ai_insights['executive_summary'])
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        # Always include metrics
         lines.append(f"**Sprint {sprint_num} Progress:**")
         lines.append(f"- **Total Issues:** {self.metrics.total_issues}")
         lines.append(f"- **Completed (Done):** {self.metrics.done_count} ({self.metrics.completion_rate:.1f}%)")
@@ -240,7 +280,8 @@ class SprintReportGenerator:
         lines.append("")
 
         if self.meetings:
-            lines.append(f"**Meeting Insights:** Analyzed {len(self.meetings)} team meetings")
+            mode = "🤖 AI-Powered Analysis" if self.ai_insights else "Rule-Based Analysis"
+            lines.append(f"**Meeting Insights:** Analyzed {len(self.meetings)} team meetings ({mode})")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -271,7 +312,13 @@ class SprintReportGenerator:
         lines.append("## Decisions/Discussions 💡")
         lines.append("")
 
-        if decisions:
+        # Use AI-extracted decisions if available
+        if self.ai_insights and self.ai_insights.get('key_decisions'):
+            lines.append("### Key Decisions (AI-Extracted)")
+            lines.append("")
+            lines.append(self.ai_insights['key_decisions'])
+            lines.append("")
+        elif decisions:
             lines.append("### Key Decisions")
             for decision in decisions[:10]:
                 date_str = decision['date'].strftime('%b %d')
@@ -335,23 +382,31 @@ class SprintReportGenerator:
             lines.append(f"**Meetings Analyzed:** {len(self.meetings)} meetings")
             lines.append("")
 
-            for theme, meetings in meeting_themes.items():
-                if not meetings:
-                    continue
-
-                lines.append(f"### {theme} Meetings ({len(meetings)})")
-                for meeting in meetings[:5]:
-                    date_str = meeting.date.strftime('%b %d')
-                    lines.append(f"- **{meeting.title}** ({date_str})")
-
-                    if meeting.summary:
-                        summary_short = meeting.summary[:200] + "..." if len(meeting.summary) > 200 else meeting.summary
-                        lines.append(f"  - {summary_short}")
-
-                    if meeting.action_items:
-                        lines.append(f"  - **Actions**: {len(meeting.action_items)} items")
-
+            # Use AI-generated meeting themes if available
+            if self.ai_insights and self.ai_insights.get('meeting_themes'):
+                lines.append("### AI-Synthesized Themes")
                 lines.append("")
+                lines.append(self.ai_insights['meeting_themes'])
+                lines.append("")
+            else:
+                # Fall back to rule-based grouping
+                for theme, meetings in meeting_themes.items():
+                    if not meetings:
+                        continue
+
+                    lines.append(f"### {theme} Meetings ({len(meetings)})")
+                    for meeting in meetings[:5]:
+                        date_str = meeting.date.strftime('%b %d')
+                        lines.append(f"- **{meeting.title}** ({date_str})")
+
+                        if meeting.summary:
+                            summary_short = meeting.summary[:200] + "..." if len(meeting.summary) > 200 else meeting.summary
+                            lines.append(f"  - {summary_short}")
+
+                        if meeting.action_items:
+                            lines.append(f"  - **Actions**: {len(meeting.action_items)} items")
+
+                    lines.append("")
         else:
             lines.append("## Meeting Insights")
             lines.append("*Meeting insights: N/A - Fathom unavailable*")
@@ -384,25 +439,97 @@ class SprintReportGenerator:
 
         return "\n".join(lines)
 
-    def save_report(self, output_dir: Path) -> Path:
-        """Save report to Downloads folder"""
+    def generate_word_document(self, template_path: Optional[Path] = None):
+        """
+        Generate Word document from sprint data
+
+        Args:
+            template_path: Path to template file (optional)
+
+        Returns:
+            Word Document object
+        """
+        from docx import Document
+
+        # Prepare sprint data
+        sprint_data = {
+            'sprint_number': self.config['sprint_number'],
+            'board_name': self.config['board_name'],
+            'start_date': self.sprint.get('startDate', 'N/A')[:10] if self.sprint else 'N/A',
+            'end_date': self.sprint.get('endDate', 'N/A')[:10] if self.sprint else 'N/A'
+        }
+
+        # Get AI insights if available
+        ai_insights = None
+        if self.claude_client and self.meetings:
+            ai_insights = self._get_ai_insights()
+
+        # Generate document
+        generator = WordDocumentGenerator(template_path)
+        document = generator.generate(
+            sprint_data=sprint_data,
+            metrics=self.metrics,
+            ai_insights=ai_insights
+        )
+
+        return document
+
+    def _get_ai_insights(self) -> Dict[str, str]:
+        """Get AI insights from meetings (if available)"""
+        if not self.meetings:
+            return {}
+
+        try:
+            insights = self.claude_client.synthesize_meeting_insights(self.meetings)
+            return {
+                'executive_summary': insights.get('executive_summary', ''),
+                'key_decisions': insights.get('key_decisions', ''),
+                'meeting_themes': insights.get('meeting_themes', '')
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get AI insights: {e}")
+            return {}
+
+    def save_report(self, output_dir: Path, format_type: str = "md",
+                    template_path: Optional[Path] = None) -> Path:
+        """
+        Save report to file
+
+        Args:
+            output_dir: Directory to save report
+            format_type: 'md' or 'docx'
+            template_path: Template path for Word docs (optional)
+
+        Returns:
+            Path to saved file
+        """
         if not self.metrics:
-            raise ValueError("Must call generate_markdown() first")
+            raise ValueError("Must call calculate_metrics() first")
 
-        # Generate report content
-        markdown = self.generate_markdown()
-
-        # Create output file path
         sprint_num = self.config['sprint_number']
-        output_file = output_dir / f"CSG-Sprint-{sprint_num}-Report.md"
 
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save report
-        output_file.write_text(markdown, encoding='utf-8')
+        if format_type == "docx":
+            # Generate Word document
+            document = self.generate_word_document(template_path)
 
-        return output_file
+            # Save to file
+            output_file = output_dir / f"CSG-Sprint-{sprint_num}-Report.docx"
+            document.save(str(output_file))
+
+            logger.info(f"Word report saved: {output_file}")
+            return output_file
+
+        else:
+            # Generate markdown (existing behavior)
+            markdown = self.generate_markdown()
+            output_file = output_dir / f"CSG-Sprint-{sprint_num}-Report.md"
+            output_file.write_text(markdown, encoding='utf-8')
+
+            logger.info(f"Markdown report saved: {output_file}")
+            return output_file
 
     # === Helper Methods for Rich Report Generation ===
 
